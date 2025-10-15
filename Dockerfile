@@ -59,6 +59,12 @@ RUN if [ ! -f "/app/config/config.js" ] && [ -f "/app/config/config.example.js" 
         cp /app/config/config.example.js /app/config/config.js; \
     fi
 
+# 📊 预先复制定价数据文件
+RUN if [ -f "/app/resources/model-pricing/model_prices_and_context_window.json" ]; then \
+        cp /app/resources/model-pricing/model_prices_and_context_window.json /app/data/model_pricing.json && \
+        echo "✅ Model pricing data initialized from fallback"; \
+    fi
+
 # 🌐 暴露端口
 EXPOSE 3000
 
