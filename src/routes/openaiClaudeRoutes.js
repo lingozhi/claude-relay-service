@@ -5,8 +5,6 @@
 
 const express = require('express')
 const router = express.Router()
-const fs = require('fs')
-const path = require('path')
 const logger = require('../utils/logger')
 const { authenticateApiKey } = require('../middleware/auth')
 const claudeRelayService = require('../services/claudeRelayService')
@@ -16,45 +14,7 @@ const unifiedClaudeScheduler = require('../services/unifiedClaudeScheduler')
 const claudeCodeHeadersService = require('../services/claudeCodeHeadersService')
 const sessionHelper = require('../utils/sessionHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
-
-// 加载模型定价数据
-let modelPricingData = {}
-try {
-  const pricingPath = path.join(__dirname, '../../data/model_pricing.json')
-  const fallbackPath = path.join(
-    __dirname,
-    '../../resources/model-pricing/model_prices_and_context_window.json'
-  )
-
-  let pricingContent
-  // 优先从 data 目录加载
-  if (fs.existsSync(pricingPath)) {
-    pricingContent = fs.readFileSync(pricingPath, 'utf8')
-    logger.info('✅ Model pricing data loaded from data directory')
-  } else if (fs.existsSync(fallbackPath)) {
-    // 如果主文件不存在，从备用位置加载
-    pricingContent = fs.readFileSync(fallbackPath, 'utf8')
-    logger.info('✅ Model pricing data loaded from fallback location')
-    // 尝试保存到 data 目录供下次使用
-    try {
-      const dataDir = path.join(__dirname, '../../data')
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true })
-      }
-      fs.writeFileSync(pricingPath, pricingContent, 'utf8')
-      logger.info('✅ Model pricing data copied to data directory')
-    } catch (copyError) {
-      logger.warn('⚠️  Could not copy pricing data to data directory:', copyError.message)
-    }
-  } else {
-    throw new Error('Model pricing data not found in any location')
-  }
-
-  modelPricingData = JSON.parse(pricingContent)
-} catch (error) {
-  logger.error('❌ Failed to load model pricing data:', error)
-  logger.warn('⚠️  Continuing without model pricing data - some features may be limited')
-}
+const pricingService = require('../services/pricingService')
 
 // 🔧 辅助函数：检查 API Key 权限
 function checkPermissions(apiKeyData, requiredPermission = 'claude') {
@@ -168,7 +128,7 @@ router.get('/v1/models/:model', authenticateApiKey, async (req, res) => {
     }
 
     // 从 model_pricing.json 获取模型信息
-    const modelData = modelPricingData[modelId]
+    const modelData = pricingService.getModelPricing(modelId)
 
     // 构建标准 OpenAI 格式的模型响应
     let modelInfo
@@ -518,3 +478,4 @@ router.post('/v1/completions', authenticateApiKey, async (req, res) => {
 })
 
 module.exports = router
+module.exports.handleChatCompletion = handleChatCompletion
