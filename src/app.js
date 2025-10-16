@@ -374,36 +374,57 @@ class Application {
     }
   }
 
-  // 🔧 初始化管理员凭据（总是从 init.json 加载，确保数据一致性）
+  // 🔧 初始化管理员凭据（优先使用环境变量，兼容Railway等云平台）
   async initializeAdmin() {
     try {
-      const initFilePath = path.join(__dirname, '..', 'data', 'init.json')
+      let adminUsername = process.env.ADMIN_USERNAME
+      let adminPassword = process.env.ADMIN_PASSWORD
+      let source = 'environment variables'
 
-      if (!fs.existsSync(initFilePath)) {
-        logger.warn('⚠️ No admin credentials found. Please run npm run setup first.')
+      // 如果环境变量未设置，尝试从 init.json 读取
+      if (!adminUsername || !adminPassword) {
+        const initFilePath = path.join(__dirname, '..', 'data', 'init.json')
+
+        if (fs.existsSync(initFilePath)) {
+          const initData = JSON.parse(fs.readFileSync(initFilePath, 'utf8'))
+          adminUsername = adminUsername || initData.adminUsername
+          adminPassword = adminPassword || initData.adminPassword
+          source = 'init.json (fallback)'
+          logger.info('📋 Using admin credentials from init.json (fallback)')
+        } else {
+          logger.warn('⚠️  No admin credentials found in environment or init.json')
+          logger.warn('⚠️  Please set ADMIN_USERNAME and ADMIN_PASSWORD environment variables')
+          logger.warn('⚠️  Or run: npm run setup')
+          return
+        }
+      } else {
+        logger.info('📋 Using admin credentials from environment variables (priority)')
+      }
+
+      // 验证凭据
+      if (!adminUsername || !adminPassword) {
+        logger.error('❌ Admin username or password is missing')
         return
       }
 
-      // 从 init.json 读取管理员凭据（作为唯一真实数据源）
-      const initData = JSON.parse(fs.readFileSync(initFilePath, 'utf8'))
-
       // 将明文密码哈希化
       const saltRounds = 10
-      const passwordHash = await bcrypt.hash(initData.adminPassword, saltRounds)
+      const passwordHash = await bcrypt.hash(adminPassword, saltRounds)
 
-      // 存储到Redis（每次启动都覆盖，确保与 init.json 同步）
+      // 存储到Redis（每次启动都覆盖，确保同步）
       const adminCredentials = {
-        username: initData.adminUsername,
+        username: adminUsername,
         passwordHash,
-        createdAt: initData.initializedAt || new Date().toISOString(),
+        createdAt: new Date().toISOString(),
         lastLogin: null,
-        updatedAt: initData.updatedAt || null
+        updatedAt: new Date().toISOString()
       }
 
       await redis.setSession('admin_credentials', adminCredentials)
 
-      logger.success('✅ Admin credentials loaded from init.json (single source of truth)')
+      logger.success(`✅ Admin credentials initialized from ${source}`)
       logger.info(`📋 Admin username: ${adminCredentials.username}`)
+      logger.info(`🔐 Password hash: ${passwordHash.substring(0, 20)}...`)
     } catch (error) {
       logger.error('❌ Failed to initialize admin credentials:', {
         error: error.message,
