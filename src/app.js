@@ -428,7 +428,9 @@ class Application {
         updatedAt: new Date().toISOString()
       }
 
-      await redis.setSession('admin_credentials', adminCredentials)
+      // ⚠️ 重要：管理员凭据需要永久保存，不应自动过期
+      // 使用1年的TTL（31536000秒）而不是默认的1天（86400秒）
+      await redis.setSession('admin_credentials', adminCredentials, 31536000) // 1年过期
 
       logger.success(`✅ Admin credentials initialized from ${source}`)
       logger.info(`📋 Admin username: ${adminCredentials.username}`)
