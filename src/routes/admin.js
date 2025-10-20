@@ -2333,7 +2333,8 @@ router.post('/claude-accounts', authenticateAdmin, async (req, res) => {
       useUnifiedUserAgent,
       useUnifiedClientId,
       unifiedClientId,
-      expiresAt
+      expiresAt,
+      extInfo
     } = req.body
 
     if (!name) {
@@ -2377,7 +2378,8 @@ router.post('/claude-accounts', authenticateAdmin, async (req, res) => {
       useUnifiedUserAgent: useUnifiedUserAgent === true, // 默认为false
       useUnifiedClientId: useUnifiedClientId === true, // 默认为false
       unifiedClientId: unifiedClientId || '', // 统一的客户端标识
-      expiresAt: expiresAt || null // 账户订阅到期时间
+      expiresAt: expiresAt || null, // 账户订阅到期时间
+      extInfo: extInfo || null
     })
 
     // 如果是分组类型，将账户添加到分组
@@ -3624,8 +3626,8 @@ router.post('/bedrock-accounts', authenticateAdmin, async (req, res) => {
     }
 
     logger.success(`☁️ Admin created Bedrock account: ${name}`)
-    const formattedAccount = formatAccountExpiry(formattedAccount)
-    return res.json({ success: true, data: result.data })
+    const formattedAccount = formatAccountExpiry(result.data)
+    return res.json({ success: true, data: formattedAccount })
   } catch (error) {
     logger.error('❌ Failed to create Bedrock account:', error)
     return res
@@ -4078,8 +4080,8 @@ router.post('/gemini-accounts', authenticateAdmin, async (req, res) => {
     }
 
     logger.success(`🏢 Admin created new Gemini account: ${accountData.name}`)
-    const formattedAccount = formatAccountExpiry(formattedAccount)
-    return res.json({ success: true, data: newAccount })
+    const formattedAccount = formatAccountExpiry(newAccount)
+    return res.json({ success: true, data: formattedAccount })
   } catch (error) {
     logger.error('❌ Failed to create Gemini account:', error)
     return res.status(500).json({ error: 'Failed to create account', message: error.message })
@@ -5736,7 +5738,7 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
   try {
     const { granularity = 'day', group = 'claude', days = 7, startDate, endDate } = req.query
 
-    const allowedGroups = ['claude', 'openai', 'gemini']
+    const allowedGroups = ['claude', 'openai', 'gemini', 'droid']
     if (!allowedGroups.includes(group)) {
       return res.status(400).json({
         success: false,
@@ -5747,7 +5749,8 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
     const groupLabels = {
       claude: 'Claude账户',
       openai: 'OpenAI账户',
-      gemini: 'Gemini账户'
+      gemini: 'Gemini账户',
+      droid: 'Droid账户'
     }
 
     // 拉取各平台账号列表
@@ -5813,6 +5816,17 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
           id,
           name: account.name || account.email || `Gemini账号 ${shortId}`,
           platform: 'gemini'
+        }
+      })
+    } else if (group === 'droid') {
+      const droidAccounts = await droidAccountService.getAllAccounts()
+      accounts = droidAccounts.map((account) => {
+        const id = String(account.id || '')
+        const shortId = id ? id.slice(0, 8) : '未知'
+        return {
+          id,
+          name: account.name || account.ownerEmail || account.ownerName || `Droid账号 ${shortId}`,
+          platform: 'droid'
         }
       })
     }
@@ -7171,6 +7185,7 @@ router.post('/openai-accounts/exchange-code', authenticateAdmin, async (req, res
     // 配置代理（如果有）
     const proxyAgent = ProxyHelper.createProxyAgent(sessionData.proxy)
     if (proxyAgent) {
+      axiosConfig.httpAgent = proxyAgent
       axiosConfig.httpsAgent = proxyAgent
       axiosConfig.proxy = false
     }
