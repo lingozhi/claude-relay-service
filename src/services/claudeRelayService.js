@@ -3,6 +3,7 @@ const zlib = require('zlib')
 const fs = require('fs')
 const path = require('path')
 const ProxyHelper = require('../utils/proxyHelper')
+const { filterForClaude } = require('../utils/headerFilter')
 const claudeAccountService = require('./claudeAccountService')
 const unifiedClaudeScheduler = require('./unifiedClaudeScheduler')
 const sessionHelper = require('../utils/sessionHelper')
@@ -12,17 +13,58 @@ const claudeCodeHeadersService = require('./claudeCodeHeadersService')
 const redis = require('../models/redis')
 const ClaudeCodeValidator = require('../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../utils/dateHelper')
-const runtimeAddon = require('../utils/runtimeAddon')
-
-const RUNTIME_EVENT_FMT_CLAUDE_REQ = 'fmtClaudeReq'
+const requestIdentityService = require('./requestIdentityService')
+const { createClaudeTestPayload } = require('../utils/testPayloadHelper')
+const userMessageQueueService = require('./userMessageQueueService')
 
 class ClaudeRelayService {
   constructor() {
-    this.claudeApiUrl = config.claude.apiUrl
+    this.claudeApiUrl = 'https://api.anthropic.com/v1/messages?beta=true'
     this.apiVersion = config.claude.apiVersion
     this.betaHeader = config.claude.betaHeader
     this.systemPrompt = config.claude.systemPrompt
     this.claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
+  }
+
+  // 🔧 根据模型ID和客户端传递的 anthropic-beta 获取最终的 header
+  // 规则：
+  // 1. 如果客户端传递了 anthropic-beta，检查是否包含 oauth-2025-04-20
+  // 2. 如果没有 oauth-2025-04-20，则添加到 claude-code-20250219 后面（如果有的话），否则放在第一位
+  // 3. 如果客户端没传递，则根据模型判断：haiku 不需要 claude-code，其他模型需要
+  _getBetaHeader(modelId, clientBetaHeader) {
+    const OAUTH_BETA = 'oauth-2025-04-20'
+    const CLAUDE_CODE_BETA = 'claude-code-20250219'
+
+    // 如果客户端传递了 anthropic-beta
+    if (clientBetaHeader) {
+      // 检查是否已包含 oauth-2025-04-20
+      if (clientBetaHeader.includes(OAUTH_BETA)) {
+        return clientBetaHeader
+      }
+
+      // 需要添加 oauth-2025-04-20
+      const parts = clientBetaHeader.split(',').map((p) => p.trim())
+
+      // 找到 claude-code-20250219 的位置
+      const claudeCodeIndex = parts.findIndex((p) => p === CLAUDE_CODE_BETA)
+
+      if (claudeCodeIndex !== -1) {
+        // 在 claude-code-20250219 后面插入
+        parts.splice(claudeCodeIndex + 1, 0, OAUTH_BETA)
+      } else {
+        // 放在第一位
+        parts.unshift(OAUTH_BETA)
+      }
+
+      return parts.join(',')
+    }
+
+    // 客户端没有传递，根据模型判断
+    const isHaikuModel = modelId && modelId.toLowerCase().includes('haiku')
+    if (isHaikuModel) {
+      return 'oauth-2025-04-20,interleaved-thinking-2025-05-14'
+    }
+    return 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14'
   }
 
   _buildStandardRateLimitMessage(resetTime) {
@@ -107,6 +149,9 @@ class ClaudeRelayService {
     options = {}
   ) {
     let upstreamRequest = null
+    let queueLockAcquired = false
+    let queueRequestId = null
+    let selectedAccountId = null
 
     try {
       // 调试日志：查看API Key数据
@@ -151,10 +196,69 @@ class ClaudeRelayService {
       }
       const { accountId } = accountSelection
       const { accountType } = accountSelection
+      selectedAccountId = accountId
 
       logger.info(
         `📤 Processing API request for key: ${apiKeyData.name || apiKeyData.id}, account: ${accountId} (${accountType})${sessionHash ? `, session: ${sessionHash}` : ''}`
       )
+
+      // 📬 用户消息队列处理：如果是用户消息请求，需要获取队列锁
+      if (userMessageQueueService.isUserMessageRequest(requestBody)) {
+        // 校验 accountId 非空，避免空值污染队列锁键
+        if (!accountId || accountId === '') {
+          logger.error('❌ accountId missing for queue lock in relayRequest')
+          throw new Error('accountId missing for queue lock')
+        }
+        const queueResult = await userMessageQueueService.acquireQueueLock(accountId)
+        if (!queueResult.acquired && !queueResult.skipped) {
+          // 区分 Redis 后端错误和队列超时
+          const isBackendError = queueResult.error === 'queue_backend_error'
+          const errorCode = isBackendError ? 'QUEUE_BACKEND_ERROR' : 'QUEUE_TIMEOUT'
+          const errorType = isBackendError ? 'queue_backend_error' : 'queue_timeout'
+          const errorMessage = isBackendError
+            ? 'Queue service temporarily unavailable, please retry later'
+            : 'User message queue wait timeout, please retry later'
+          const statusCode = isBackendError ? 500 : 503
+
+          // 结构化性能日志，用于后续统计
+          logger.performance('user_message_queue_error', {
+            errorType,
+            errorCode,
+            accountId,
+            statusCode,
+            apiKeyName: apiKeyData.name,
+            backendError: isBackendError ? queueResult.errorMessage : undefined
+          })
+
+          logger.warn(
+            `📬 User message queue ${errorType} for account ${accountId}, key: ${apiKeyData.name}`,
+            isBackendError ? { backendError: queueResult.errorMessage } : {}
+          )
+          return {
+            statusCode,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-user-message-queue-error': errorType
+            },
+            body: JSON.stringify({
+              type: 'error',
+              error: {
+                type: errorType,
+                code: errorCode,
+                message: errorMessage
+              }
+            }),
+            accountId
+          }
+        }
+        if (queueResult.acquired && !queueResult.skipped) {
+          queueLockAcquired = true
+          queueRequestId = queueResult.requestId
+          logger.debug(
+            `📬 User message queue lock acquired for account ${accountId}, requestId: ${queueRequestId}`
+          )
+        }
+      }
 
       // 获取账户信息
       let account = await claudeAccountService.getAccount(accountId)
@@ -229,6 +333,23 @@ class ClaudeRelayService {
         },
         options
       )
+
+      // 📬 请求已发送成功，立即释放队列锁（无需等待响应处理完成）
+      // 因为 Claude API 限流基于请求发送时刻计算（RPM），不是请求完成时刻
+      if (queueLockAcquired && queueRequestId && selectedAccountId) {
+        try {
+          await userMessageQueueService.releaseQueueLock(selectedAccountId, queueRequestId)
+          queueLockAcquired = false // 标记已释放，防止 finally 重复释放
+          logger.debug(
+            `📬 User message queue lock released early for account ${selectedAccountId}, requestId: ${queueRequestId}`
+          )
+        } catch (releaseError) {
+          logger.error(
+            `❌ Failed to release user message queue lock early for account ${selectedAccountId}:`,
+            releaseError.message
+          )
+        }
+      }
 
       response.accountId = accountId
       response.accountType = accountType
@@ -498,6 +619,21 @@ class ClaudeRelayService {
         error.message
       )
       throw error
+    } finally {
+      // 📬 释放用户消息队列锁（兜底，正常情况下已在请求发送后提前释放）
+      if (queueLockAcquired && queueRequestId && selectedAccountId) {
+        try {
+          await userMessageQueueService.releaseQueueLock(selectedAccountId, queueRequestId)
+          logger.debug(
+            `📬 User message queue lock released in finally for account ${selectedAccountId}, requestId: ${queueRequestId}`
+          )
+        } catch (releaseError) {
+          logger.error(
+            `❌ Failed to release user message queue lock for account ${selectedAccountId}:`,
+            releaseError.message
+          )
+        }
+      }
     }
   }
 
@@ -775,7 +911,8 @@ class ClaudeRelayService {
       return total
     }
 
-    const removeFromMessages = () => {
+    // 只移除 cache_control 属性，保留内容本身，避免丢失用户消息
+    const removeCacheControlFromMessages = () => {
       if (!Array.isArray(body.messages)) {
         return false
       }
@@ -789,12 +926,8 @@ class ClaudeRelayService {
         for (let contentIndex = 0; contentIndex < message.content.length; contentIndex += 1) {
           const contentItem = message.content[contentIndex]
           if (contentItem && contentItem.cache_control) {
-            message.content.splice(contentIndex, 1)
-
-            if (message.content.length === 0) {
-              body.messages.splice(messageIndex, 1)
-            }
-
+            // 只删除 cache_control 属性，保留内容
+            delete contentItem.cache_control
             return true
           }
         }
@@ -803,7 +936,8 @@ class ClaudeRelayService {
       return false
     }
 
-    const removeFromSystem = () => {
+    // 只移除 cache_control 属性，保留 system 内容
+    const removeCacheControlFromSystem = () => {
       if (!Array.isArray(body.system)) {
         return false
       }
@@ -811,12 +945,8 @@ class ClaudeRelayService {
       for (let index = 0; index < body.system.length; index += 1) {
         const systemItem = body.system[index]
         if (systemItem && systemItem.cache_control) {
-          body.system.splice(index, 1)
-
-          if (body.system.length === 0) {
-            delete body.system
-          }
-
+          // 只删除 cache_control 属性，保留内容
+          delete systemItem.cache_control
           return true
         }
       }
@@ -827,12 +957,13 @@ class ClaudeRelayService {
     let total = countCacheControlBlocks()
 
     while (total > MAX_CACHE_CONTROL_BLOCKS) {
-      if (removeFromMessages()) {
+      // 优先从 messages 中移除 cache_control，再从 system 中移除
+      if (removeCacheControlFromMessages()) {
         total -= 1
         continue
       }
 
-      if (removeFromSystem()) {
+      if (removeCacheControlFromSystem()) {
         total -= 1
         continue
       }
@@ -867,107 +998,20 @@ class ClaudeRelayService {
 
   // 🔧 过滤客户端请求头
   _filterClientHeaders(clientHeaders) {
-    // 需要移除的敏感 headers
-    const sensitiveHeaders = [
-      'content-type',
-      'user-agent',
-      'x-api-key',
-      'authorization',
-      'host',
-      'content-length',
-      'connection',
-      'proxy-authorization',
-      'content-encoding',
-      'transfer-encoding'
-    ]
-
-    // 🆕 需要移除的浏览器相关 headers（避免CORS问题）
-    const browserHeaders = [
-      'origin',
-      'referer',
-      'sec-fetch-mode',
-      'sec-fetch-site',
-      'sec-fetch-dest',
-      'sec-ch-ua',
-      'sec-ch-ua-mobile',
-      'sec-ch-ua-platform',
-      'accept-language',
-      'accept-encoding',
-      'accept',
-      'cache-control',
-      'pragma',
-      'anthropic-dangerous-direct-browser-access' // 这个头可能触发CORS检查
-    ]
-
-    // 应该保留的 headers（用于会话一致性和追踪）
-    const allowedHeaders = [
-      'x-request-id',
-      'anthropic-version', // 保留API版本
-      'anthropic-beta' // 保留beta功能
-    ]
-
-    const filteredHeaders = {}
-
-    // 转发客户端的非敏感 headers
-    Object.keys(clientHeaders || {}).forEach((key) => {
-      const lowerKey = key.toLowerCase()
-      // 如果在允许列表中，直接保留
-      if (allowedHeaders.includes(lowerKey)) {
-        filteredHeaders[key] = clientHeaders[key]
-      }
-      // 如果不在敏感列表和浏览器列表中，也保留
-      else if (!sensitiveHeaders.includes(lowerKey) && !browserHeaders.includes(lowerKey)) {
-        filteredHeaders[key] = clientHeaders[key]
-      }
-    })
-
-    return filteredHeaders
+    // 使用统一的 headerFilter 工具类
+    // 同时伪装成正常的直接客户端请求，避免触发上游 API 的安全检查
+    return filterForClaude(clientHeaders)
   }
 
-  _applyLocalRequestFormatters(body, headers, context = {}) {
-    const normalizedHeaders = headers && typeof headers === 'object' ? { ...headers } : {}
-
-    try {
-      const payload = {
-        body,
-        headers: normalizedHeaders,
-        ...context
-      }
-
-      const result = runtimeAddon.emitSync(RUNTIME_EVENT_FMT_CLAUDE_REQ, payload)
-      if (!result || typeof result !== 'object') {
-        return { body, headers: normalizedHeaders }
-      }
-
-      const nextBody = result.body && typeof result.body === 'object' ? result.body : body
-      const nextHeaders =
-        result.headers && typeof result.headers === 'object' ? result.headers : normalizedHeaders
-      const abortResponse =
-        result.abortResponse && typeof result.abortResponse === 'object'
-          ? result.abortResponse
-          : null
-
-      return { body: nextBody, headers: nextHeaders, abortResponse }
-    } catch (error) {
-      logger.warn('⚠️ 应用本地 fmtClaudeReq 插件失败:', error)
-      return { body, headers: normalizedHeaders }
-    }
-  }
-
-  // 🔗 发送请求到Claude API
-  async _makeClaudeRequest(
+  // 🔧 准备请求头和 payload（抽离公共逻辑）
+  async _prepareRequestHeadersAndPayload(
     body,
-    accessToken,
-    proxyAgent,
     clientHeaders,
     accountId,
-    onRequest,
-    requestOptions = {}
+    accessToken,
+    options = {}
   ) {
-    const url = new URL(this.claudeApiUrl)
-
-    // 获取账户信息用于统一 User-Agent
-    const account = await claudeAccountService.getAccount(accountId)
+    const { account, accountType, sessionHash, requestOptions = {}, isStream = false } = options
 
     // 获取统一的 User-Agent
     const unifiedUA = await this.captureAndGetUnifiedUserAgent(clientHeaders, account)
@@ -995,20 +1039,124 @@ class ClaudeRelayService {
       })
     }
 
-    const extensionResult = this._applyLocalRequestFormatters(requestPayload, finalHeaders, {
+    // 应用请求身份转换
+    const extensionResult = this._applyRequestIdentityTransform(requestPayload, finalHeaders, {
       account,
       accountId,
+      accountType,
+      sessionHash,
       clientHeaders,
       requestOptions,
-      isStream: false
+      isStream
     })
 
     if (extensionResult.abortResponse) {
-      return extensionResult.abortResponse
+      return { abortResponse: extensionResult.abortResponse }
     }
 
     requestPayload = extensionResult.body
     finalHeaders = extensionResult.headers
+
+    // 序列化请求体，计算 content-length
+    const bodyString = JSON.stringify(requestPayload)
+    const contentLength = Buffer.byteLength(bodyString, 'utf8')
+
+    // 构建最终请求头（包含认证、版本、User-Agent、Beta 等）
+    const headers = {
+      host: 'api.anthropic.com',
+      connection: 'keep-alive',
+      'content-type': 'application/json',
+      'content-length': String(contentLength),
+      authorization: `Bearer ${accessToken}`,
+      'anthropic-version': this.apiVersion,
+      ...finalHeaders
+    }
+
+    // 使用统一 User-Agent 或客户端提供的，最后使用默认值
+    const userAgent = unifiedUA || headers['user-agent'] || 'claude-cli/1.0.119 (external, cli)'
+    const acceptHeader = headers['accept'] || 'application/json'
+    delete headers['user-agent']
+    delete headers['accept']
+    headers['User-Agent'] = userAgent
+    headers['Accept'] = acceptHeader
+
+    logger.info(`🔗 指纹是这个: ${headers['User-Agent']}`)
+
+    // 根据模型和客户端传递的 anthropic-beta 动态设置 header
+    const modelId = requestPayload?.model || body?.model
+    const clientBetaHeader = clientHeaders?.['anthropic-beta']
+    headers['anthropic-beta'] = this._getBetaHeader(modelId, clientBetaHeader)
+    return {
+      requestPayload,
+      bodyString,
+      headers,
+      isRealClaudeCode
+    }
+  }
+
+  _applyRequestIdentityTransform(body, headers, context = {}) {
+    const normalizedHeaders = headers && typeof headers === 'object' ? { ...headers } : {}
+
+    try {
+      const payload = {
+        body,
+        headers: normalizedHeaders,
+        ...context
+      }
+
+      const result = requestIdentityService.transform(payload)
+      if (!result || typeof result !== 'object') {
+        return { body, headers: normalizedHeaders }
+      }
+
+      const nextBody = result.body && typeof result.body === 'object' ? result.body : body
+      const nextHeaders =
+        result.headers && typeof result.headers === 'object' ? result.headers : normalizedHeaders
+      const abortResponse =
+        result.abortResponse && typeof result.abortResponse === 'object'
+          ? result.abortResponse
+          : null
+
+      return { body: nextBody, headers: nextHeaders, abortResponse }
+    } catch (error) {
+      logger.warn('⚠️ 应用请求身份转换失败:', error)
+      return { body, headers: normalizedHeaders }
+    }
+  }
+
+  // 🔗 发送请求到Claude API
+  async _makeClaudeRequest(
+    body,
+    accessToken,
+    proxyAgent,
+    clientHeaders,
+    accountId,
+    onRequest,
+    requestOptions = {}
+  ) {
+    const url = new URL(this.claudeApiUrl)
+
+    // 获取账户信息用于统一 User-Agent
+    const account = await claudeAccountService.getAccount(accountId)
+
+    // 使用公共方法准备请求头和 payload
+    const prepared = await this._prepareRequestHeadersAndPayload(
+      body,
+      clientHeaders,
+      accountId,
+      accessToken,
+      {
+        account,
+        requestOptions,
+        isStream: false
+      }
+    )
+
+    if (prepared.abortResponse) {
+      return prepared.abortResponse
+    }
+
+    const { bodyString, headers } = prepared
 
     return new Promise((resolve, reject) => {
       // 支持自定义路径（如 count_tokens）
@@ -1022,31 +1170,11 @@ class ClaudeRelayService {
       const options = {
         hostname: url.hostname,
         port: url.port || 443,
-        path: requestPath,
+        path: requestPath + (url.search || ''),
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-          'anthropic-version': this.apiVersion,
-          ...finalHeaders
-        },
+        headers,
         agent: proxyAgent,
         timeout: config.requestTimeout || 600000
-      }
-
-      // 使用统一 User-Agent 或客户端提供的，最后使用默认值
-      if (!options.headers['user-agent'] || unifiedUA !== null) {
-        const userAgent = unifiedUA || 'claude-cli/1.0.119 (external, cli)'
-        options.headers['user-agent'] = userAgent
-      }
-
-      logger.info(`🔗 指纹是这个: ${options.headers['user-agent']}`)
-
-      // 使用自定义的 betaHeader 或默认值
-      const betaHeader =
-        requestOptions?.betaHeader !== undefined ? requestOptions.betaHeader : this.betaHeader
-      if (betaHeader) {
-        options.headers['anthropic-beta'] = betaHeader
       }
 
       const req = https.request(options, (res) => {
@@ -1058,32 +1186,32 @@ class ClaudeRelayService {
 
         res.on('end', () => {
           try {
-            let bodyString = ''
+            let responseBody = ''
 
             // 根据Content-Encoding处理响应数据
             const contentEncoding = res.headers['content-encoding']
             if (contentEncoding === 'gzip') {
               try {
-                bodyString = zlib.gunzipSync(responseData).toString('utf8')
+                responseBody = zlib.gunzipSync(responseData).toString('utf8')
               } catch (unzipError) {
                 logger.error('❌ Failed to decompress gzip response:', unzipError)
-                bodyString = responseData.toString('utf8')
+                responseBody = responseData.toString('utf8')
               }
             } else if (contentEncoding === 'deflate') {
               try {
-                bodyString = zlib.inflateSync(responseData).toString('utf8')
+                responseBody = zlib.inflateSync(responseData).toString('utf8')
               } catch (unzipError) {
                 logger.error('❌ Failed to decompress deflate response:', unzipError)
-                bodyString = responseData.toString('utf8')
+                responseBody = responseData.toString('utf8')
               }
             } else {
-              bodyString = responseData.toString('utf8')
+              responseBody = responseData.toString('utf8')
             }
 
             const response = {
               statusCode: res.statusCode,
               headers: res.headers,
-              body: bodyString
+              body: responseBody
             }
 
             logger.debug(`🔗 Claude API response: ${res.statusCode}`)
@@ -1102,7 +1230,6 @@ class ClaudeRelayService {
       }
 
       req.on('error', async (error) => {
-        console.error(': ❌ ', error)
         logger.error(`❌ Claude API request error (Account: ${accountId}):`, error.message, {
           code: error.code,
           errno: error.errno,
@@ -1138,7 +1265,7 @@ class ClaudeRelayService {
       })
 
       // 写入请求体
-      req.write(JSON.stringify(requestPayload))
+      req.write(bodyString)
       req.end()
     })
   }
@@ -1153,6 +1280,10 @@ class ClaudeRelayService {
     streamTransformer = null,
     options = {}
   ) {
+    let queueLockAcquired = false
+    let queueRequestId = null
+    let selectedAccountId = null
+
     try {
       // 调试日志：查看API Key数据（流式请求）
       logger.info('🔍 [Stream] API Key data received:', {
@@ -1196,6 +1327,70 @@ class ClaudeRelayService {
       }
       const { accountId } = accountSelection
       const { accountType } = accountSelection
+      selectedAccountId = accountId
+
+      // 📬 用户消息队列处理：如果是用户消息请求，需要获取队列锁
+      if (userMessageQueueService.isUserMessageRequest(requestBody)) {
+        // 校验 accountId 非空，避免空值污染队列锁键
+        if (!accountId || accountId === '') {
+          logger.error('❌ accountId missing for queue lock in relayStreamRequestWithUsageCapture')
+          throw new Error('accountId missing for queue lock')
+        }
+        const queueResult = await userMessageQueueService.acquireQueueLock(accountId)
+        if (!queueResult.acquired && !queueResult.skipped) {
+          // 区分 Redis 后端错误和队列超时
+          const isBackendError = queueResult.error === 'queue_backend_error'
+          const errorCode = isBackendError ? 'QUEUE_BACKEND_ERROR' : 'QUEUE_TIMEOUT'
+          const errorType = isBackendError ? 'queue_backend_error' : 'queue_timeout'
+          const errorMessage = isBackendError
+            ? 'Queue service temporarily unavailable, please retry later'
+            : 'User message queue wait timeout, please retry later'
+          const statusCode = isBackendError ? 500 : 503
+
+          // 结构化性能日志，用于后续统计
+          logger.performance('user_message_queue_error', {
+            errorType,
+            errorCode,
+            accountId,
+            statusCode,
+            stream: true,
+            apiKeyName: apiKeyData.name,
+            backendError: isBackendError ? queueResult.errorMessage : undefined
+          })
+
+          logger.warn(
+            `📬 User message queue ${errorType} for account ${accountId} (stream), key: ${apiKeyData.name}`,
+            isBackendError ? { backendError: queueResult.errorMessage } : {}
+          )
+          if (!responseStream.headersSent) {
+            responseStream.writeHead(statusCode, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+              'x-user-message-queue-error': errorType
+            })
+          }
+          const errorEvent = `event: error\ndata: ${JSON.stringify({
+            type: 'error',
+            error: {
+              type: errorType,
+              code: errorCode,
+              message: errorMessage
+            }
+          })}\n\n`
+          responseStream.write(errorEvent)
+          responseStream.write('data: [DONE]\n\n')
+          responseStream.end()
+          return
+        }
+        if (queueResult.acquired && !queueResult.skipped) {
+          queueLockAcquired = true
+          queueRequestId = queueResult.requestId
+          logger.debug(
+            `📬 User message queue lock acquired for account ${accountId} (stream), requestId: ${queueRequestId}`
+          )
+        }
+      }
 
       logger.info(
         `📡 Processing streaming API request with usage capture for key: ${apiKeyData.name || apiKeyData.id}, account: ${accountId} (${accountType})${sessionHash ? `, session: ${sessionHash}` : ''}`
@@ -1253,18 +1448,57 @@ class ClaudeRelayService {
         responseStream,
         (usageData) => {
           // 在usageCallback中添加accountId
-          usageCallback({ ...usageData, accountId })
+          if (usageCallback && typeof usageCallback === 'function') {
+            usageCallback({ ...usageData, accountId })
+          }
         },
         accountId,
         accountType,
         sessionHash,
         streamTransformer,
         options,
-        isDedicatedOfficialAccount
+        isDedicatedOfficialAccount,
+        // 📬 新增回调：在收到响应头时释放队列锁
+        async () => {
+          if (queueLockAcquired && queueRequestId && selectedAccountId) {
+            try {
+              await userMessageQueueService.releaseQueueLock(selectedAccountId, queueRequestId)
+              queueLockAcquired = false // 标记已释放，防止 finally 重复释放
+              logger.debug(
+                `📬 User message queue lock released early for stream account ${selectedAccountId}, requestId: ${queueRequestId}`
+              )
+            } catch (releaseError) {
+              logger.error(
+                `❌ Failed to release user message queue lock early for stream account ${selectedAccountId}:`,
+                releaseError.message
+              )
+            }
+          }
+        }
       )
     } catch (error) {
-      logger.error(`❌ Claude stream relay with usage capture failed:`, error)
+      // 客户端主动断开连接是正常情况，使用 INFO 级别
+      if (error.message === 'Client disconnected') {
+        logger.info(`🔌 Claude stream relay ended: Client disconnected`)
+      } else {
+        logger.error(`❌ Claude stream relay with usage capture failed:`, error)
+      }
       throw error
+    } finally {
+      // 📬 释放用户消息队列锁（兜底，正常情况下已在收到响应头后提前释放）
+      if (queueLockAcquired && queueRequestId && selectedAccountId) {
+        try {
+          await userMessageQueueService.releaseQueueLock(selectedAccountId, queueRequestId)
+          logger.debug(
+            `📬 User message queue lock released in finally for stream account ${selectedAccountId}, requestId: ${queueRequestId}`
+          )
+        } catch (releaseError) {
+          logger.error(
+            `❌ Failed to release user message queue lock for stream account ${selectedAccountId}:`,
+            releaseError.message
+          )
+        }
+      }
     }
   }
 
@@ -1281,7 +1515,8 @@ class ClaudeRelayService {
     sessionHash,
     streamTransformer = null,
     requestOptions = {},
-    isDedicatedOfficialAccount = false
+    isDedicatedOfficialAccount = false,
+    onResponseStart = null // 📬 新增：收到响应头时的回调，用于提前释放队列锁
   ) {
     // 获取账户信息用于统一 User-Agent
     const account = await claudeAccountService.getAccount(accountId)
@@ -1289,79 +1524,37 @@ class ClaudeRelayService {
     const isOpusModelRequest =
       typeof body?.model === 'string' && body.model.toLowerCase().includes('opus')
 
-    // 获取统一的 User-Agent
-    const unifiedUA = await this.captureAndGetUnifiedUserAgent(clientHeaders, account)
-
-    // 获取过滤后的客户端 headers
-    const filteredHeaders = this._filterClientHeaders(clientHeaders)
-
-    // 判断是否是真实的 Claude Code 请求
-    const isRealClaudeCode = this.isRealClaudeCodeRequest(body)
-
-    // 如果不是真实的 Claude Code 请求，需要使用从账户获取的 Claude Code headers
-    let finalHeaders = { ...filteredHeaders }
-    let requestPayload = body
-
-    if (!isRealClaudeCode) {
-      // 获取该账号存储的 Claude Code headers
-      const claudeCodeHeaders = await claudeCodeHeadersService.getAccountHeaders(accountId)
-
-      // 只添加客户端没有提供的 headers
-      Object.keys(claudeCodeHeaders).forEach((key) => {
-        const lowerKey = key.toLowerCase()
-        if (!finalHeaders[key] && !finalHeaders[lowerKey]) {
-          finalHeaders[key] = claudeCodeHeaders[key]
-        }
-      })
-    }
-
-    const extensionResult = this._applyLocalRequestFormatters(requestPayload, finalHeaders, {
-      account,
-      accountId,
-      accountType,
-      sessionHash,
+    // 使用公共方法准备请求头和 payload
+    const prepared = await this._prepareRequestHeadersAndPayload(
+      body,
       clientHeaders,
-      requestOptions,
-      isStream: true
-    })
+      accountId,
+      accessToken,
+      {
+        account,
+        accountType,
+        sessionHash,
+        requestOptions,
+        isStream: true
+      }
+    )
 
-    if (extensionResult.abortResponse) {
-      return extensionResult.abortResponse
+    if (prepared.abortResponse) {
+      return prepared.abortResponse
     }
 
-    requestPayload = extensionResult.body
-    finalHeaders = extensionResult.headers
+    const { bodyString, headers } = prepared
 
     return new Promise((resolve, reject) => {
       const url = new URL(this.claudeApiUrl)
-
       const options = {
         hostname: url.hostname,
         port: url.port || 443,
-        path: url.pathname,
+        path: url.pathname + (url.search || ''),
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-          'anthropic-version': this.apiVersion,
-          ...finalHeaders
-        },
+        headers,
         agent: proxyAgent,
         timeout: config.requestTimeout || 600000
-      }
-
-      // 使用统一 User-Agent 或客户端提供的，最后使用默认值
-      if (!options.headers['user-agent'] || unifiedUA !== null) {
-        const userAgent = unifiedUA || 'claude-cli/1.0.119 (external, cli)'
-        options.headers['user-agent'] = userAgent
-      }
-
-      logger.info(`🔗 指纹是这个: ${options.headers['user-agent']}`)
-      // 使用自定义的 betaHeader 或默认值
-      const betaHeader =
-        requestOptions?.betaHeader !== undefined ? requestOptions.betaHeader : this.betaHeader
-      if (betaHeader) {
-        options.headers['anthropic-beta'] = betaHeader
       }
 
       const req = https.request(options, async (res) => {
@@ -1508,7 +1701,6 @@ class ClaudeRelayService {
           })
 
           res.on('end', () => {
-            console.error(': ❌ ', errorData)
             logger.error(
               `❌ Claude API error response (Account: ${account?.name || accountId}):`,
               errorData
@@ -1533,21 +1725,51 @@ class ClaudeRelayService {
               })()
             }
             if (!responseStream.destroyed) {
-              // 发送错误事件
-              responseStream.write('event: error\n')
-              responseStream.write(
-                `data: ${JSON.stringify({
-                  error: 'Claude API error',
-                  status: res.statusCode,
-                  details: errorData,
-                  timestamp: new Date().toISOString()
-                })}\n\n`
-              )
+              // 解析 Claude API 返回的错误详情
+              let errorMessage = `Claude API error: ${res.statusCode}`
+              try {
+                const parsedError = JSON.parse(errorData)
+                if (parsedError.error?.message) {
+                  errorMessage = parsedError.error.message
+                } else if (parsedError.message) {
+                  errorMessage = parsedError.message
+                }
+              } catch {
+                // 使用默认错误消息
+              }
+
+              // 如果有 streamTransformer（如测试请求），使用前端期望的格式
+              if (streamTransformer) {
+                responseStream.write(
+                  `data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`
+                )
+              } else {
+                // 标准错误格式
+                responseStream.write('event: error\n')
+                responseStream.write(
+                  `data: ${JSON.stringify({
+                    error: 'Claude API error',
+                    status: res.statusCode,
+                    details: errorData,
+                    timestamp: new Date().toISOString()
+                  })}\n\n`
+                )
+              }
               responseStream.end()
             }
             reject(new Error(`Claude API error: ${res.statusCode}`))
           })
           return
+        }
+
+        // 📬 收到成功响应头（HTTP 200），立即调用回调释放队列锁
+        // 此时请求已被 Claude API 接受并计入 RPM 配额，无需等待响应完成
+        if (onResponseStart && typeof onResponseStart === 'function') {
+          try {
+            await onResponseStart()
+          } catch (callbackError) {
+            logger.error('❌ Error in onResponseStart callback:', callbackError.message)
+          }
         }
 
         let buffer = ''
@@ -1782,20 +2004,22 @@ class ClaudeRelayService {
             }
 
             // 调用一次usageCallback记录合并后的数据
-            usageCallback(finalUsage)
+            if (usageCallback && typeof usageCallback === 'function') {
+              usageCallback(finalUsage)
+            }
           }
 
           // 提取5小时会话窗口状态
           // 使用大小写不敏感的方式获取响应头
-          const get5hStatus = (headers) => {
-            if (!headers) {
+          const get5hStatus = (resHeaders) => {
+            if (!resHeaders) {
               return null
             }
             // HTTP头部名称不区分大小写，需要处理不同情况
             return (
-              headers['anthropic-ratelimit-unified-5h-status'] ||
-              headers['Anthropic-Ratelimit-Unified-5h-Status'] ||
-              headers['ANTHROPIC-RATELIMIT-UNIFIED-5H-STATUS']
+              resHeaders['anthropic-ratelimit-unified-5h-status'] ||
+              resHeaders['Anthropic-Ratelimit-Unified-5h-Status'] ||
+              resHeaders['ANTHROPIC-RATELIMIT-UNIFIED-5H-STATUS']
             )
           }
 
@@ -1958,18 +2182,24 @@ class ClaudeRelayService {
       responseStream.on('close', () => {
         logger.debug('🔌 Client disconnected, cleaning up stream')
         if (!req.destroyed) {
-          req.destroy()
+          req.destroy(new Error('Client disconnected'))
         }
       })
 
       // 写入请求体
-      req.write(JSON.stringify(requestPayload))
+      req.write(bodyString)
       req.end()
     })
   }
 
   // 🛠️ 统一的错误处理方法
-  async _handleServerError(accountId, statusCode, _sessionHash = null, context = '') {
+  async _handleServerError(
+    accountId,
+    statusCode,
+    sessionHash = null,
+    context = '',
+    accountType = 'claude-official'
+  ) {
     try {
       await claudeAccountService.recordServerError(accountId, statusCode)
       const errorCount = await claudeAccountService.getServerErrorCount(accountId)
@@ -1982,6 +2212,18 @@ class ClaudeRelayService {
       logger.warn(
         `⏱️ ${prefix}${isTimeout ? 'Timeout' : 'Server'} error for account ${accountId}, error count: ${errorCount}/${threshold}`
       )
+
+      // 标记账户为临时不可用（5分钟）
+      try {
+        await unifiedClaudeScheduler.markAccountTemporarilyUnavailable(
+          accountId,
+          accountType,
+          sessionHash,
+          300
+        )
+      } catch (markError) {
+        logger.error(`❌ Failed to mark account temporarily unavailable: ${accountId}`, markError)
+      }
 
       if (errorCount > threshold) {
         const errorTypeLabel = isTimeout ? 'timeout' : '5xx'
@@ -2151,6 +2393,132 @@ class ClaudeRelayService {
     }
 
     return 0 // 两个版本号相等
+  }
+
+  // 🧪 创建测试用的流转换器，将 Claude API SSE 格式转换为前端期望的格式
+  _createTestStreamTransformer() {
+    let testStartSent = false
+
+    return (rawData) => {
+      const lines = rawData.split('\n')
+      const outputLines = []
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) {
+          // 保留空行用于 SSE 分隔
+          if (line.trim() === '') {
+            outputLines.push('')
+          }
+          continue
+        }
+
+        const jsonStr = line.substring(6).trim()
+        if (!jsonStr || jsonStr === '[DONE]') {
+          continue
+        }
+
+        try {
+          const data = JSON.parse(jsonStr)
+
+          // 发送 test_start 事件（只在第一次 message_start 时发送）
+          if (data.type === 'message_start' && !testStartSent) {
+            testStartSent = true
+            outputLines.push(`data: ${JSON.stringify({ type: 'test_start' })}`)
+            outputLines.push('')
+          }
+
+          // 转换 content_block_delta 为 content
+          if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
+            outputLines.push(`data: ${JSON.stringify({ type: 'content', text: data.delta.text })}`)
+            outputLines.push('')
+          }
+
+          // 转换 message_stop 为 test_complete
+          if (data.type === 'message_stop') {
+            outputLines.push(`data: ${JSON.stringify({ type: 'test_complete', success: true })}`)
+            outputLines.push('')
+          }
+
+          // 处理错误事件
+          if (data.type === 'error') {
+            const errorMsg = data.error?.message || data.message || '未知错误'
+            outputLines.push(`data: ${JSON.stringify({ type: 'error', error: errorMsg })}`)
+            outputLines.push('')
+          }
+        } catch {
+          // 忽略解析错误
+        }
+      }
+
+      return outputLines.length > 0 ? outputLines.join('\n') : null
+    }
+  }
+
+  // 🧪 测试账号连接（供Admin API使用，直接复用 _makeClaudeStreamRequestWithUsageCapture）
+  async testAccountConnection(accountId, responseStream) {
+    const testRequestBody = createClaudeTestPayload('claude-sonnet-4-5-20250929', { stream: true })
+
+    try {
+      // 获取账户信息
+      const account = await claudeAccountService.getAccount(accountId)
+      if (!account) {
+        throw new Error('Account not found')
+      }
+
+      logger.info(`🧪 Testing Claude account connection: ${account.name} (${accountId})`)
+
+      // 获取有效的访问token
+      const accessToken = await claudeAccountService.getValidAccessToken(accountId)
+      if (!accessToken) {
+        throw new Error('Failed to get valid access token')
+      }
+
+      // 获取代理配置
+      const proxyAgent = await this._getProxyAgent(accountId)
+
+      // 设置响应头
+      if (!responseStream.headersSent) {
+        responseStream.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no'
+        })
+      }
+
+      // 创建流转换器，将 Claude API 格式转换为前端测试页面期望的格式
+      const streamTransformer = this._createTestStreamTransformer()
+
+      // 直接复用现有的流式请求方法
+      await this._makeClaudeStreamRequestWithUsageCapture(
+        testRequestBody,
+        accessToken,
+        proxyAgent,
+        {}, // clientHeaders - 测试不需要客户端headers
+        responseStream,
+        null, // usageCallback - 测试不需要统计
+        accountId,
+        'claude-official', // accountType
+        null, // sessionHash - 测试不需要会话
+        streamTransformer, // 使用转换器将 Claude API 格式转为前端期望格式
+        {}, // requestOptions
+        false // isDedicatedOfficialAccount
+      )
+
+      logger.info(`✅ Test request completed for account: ${account.name}`)
+    } catch (error) {
+      logger.error(`❌ Test account connection failed:`, error)
+      // 发送错误事件给前端
+      if (!responseStream.destroyed && !responseStream.writableEnded) {
+        try {
+          const errorMsg = error.message || '测试失败'
+          responseStream.write(`data: ${JSON.stringify({ type: 'error', error: errorMsg })}\n\n`)
+        } catch {
+          // 忽略写入错误
+        }
+      }
+      throw error
+    }
   }
 
   // 🎯 健康检查

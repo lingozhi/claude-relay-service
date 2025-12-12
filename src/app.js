@@ -85,6 +85,11 @@ class Application {
       const claudeAccountService = require('./services/claudeAccountService')
       await claudeAccountService.initializeSessionWindows()
 
+      // 📊 初始化费用排序索引服务
+      logger.info('📊 Initializing cost rank service...')
+      const costRankService = require('./services/costRankService')
+      await costRankService.initialize()
+
       // 超早期拦截 /admin-next/ 请求 - 在所有中间件之前
       this.app.use((req, res, next) => {
         if (req.path === '/admin-next/' && req.method === 'GET') {
@@ -725,6 +730,14 @@ class Application {
     }, 60000) // 每分钟执行一次
 
     logger.info('🔢 Concurrency cleanup task started (running every 1 minute)')
+
+    // 📬 启动用户消息队列服务
+    const userMessageQueueService = require('./services/userMessageQueueService')
+    // 先清理服务重启后残留的锁，防止旧锁阻塞新请求
+    userMessageQueueService.cleanupStaleLocks().then(() => {
+      // 然后启动定时清理任务
+      userMessageQueueService.startCleanupTask()
+    })
   }
 
   setupGracefulShutdown() {
@@ -761,15 +774,39 @@ class Application {
           logger.error('❌ Error stopping rate limit cleanup service:', error)
         }
 
-        // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
-        try {
-          logger.info('🔢 Cleaning up all concurrency counters...')
-          const keys = await redis.keys('concurrency:*')
-          if (keys.length > 0) {
-            await redis.client.del(...keys)
-            logger.info(`✅ Cleaned ${keys.length} concurrency keys`)
-          } else {
-            logger.info('✅ No concurrency keys to clean')
+
+          // 停止用户消息队列清理服务
+          try {
+            const userMessageQueueService = require('./services/userMessageQueueService')
+            userMessageQueueService.stopCleanupTask()
+            logger.info('📬 User message queue service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping user message queue service:', error)
+          }
+
+          // 停止费用排序索引服务
+          try {
+            const costRankService = require('./services/costRankService')
+            costRankService.shutdown()
+            logger.info('📊 Cost rank service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping cost rank service:', error)
+          }
+
+          // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
+          try {
+            logger.info('🔢 Cleaning up all concurrency counters...')
+            const keys = await redis.keys('concurrency:*')
+            if (keys.length > 0) {
+              await redis.client.del(...keys)
+              logger.info(`✅ Cleaned ${keys.length} concurrency keys`)
+            } else {
+              logger.info('✅ No concurrency keys to clean')
+            }
+          } catch (error) {
+            logger.error('❌ Error cleaning up concurrency counters:', error)
+            // 不阻止退出流程
+
           }
         } catch (error) {
           logger.error('❌ Error cleaning up concurrency counters:', error)

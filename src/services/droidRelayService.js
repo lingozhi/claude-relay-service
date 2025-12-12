@@ -18,14 +18,15 @@ const RUNTIME_EVENT_FMT_PAYLOAD = 'fmtPayload'
 
 class DroidRelayService {
   constructor() {
-    this.factoryApiBaseUrl = 'https://app.factory.ai/api/llm'
+    this.factoryApiBaseUrl = 'https://api.factory.ai/api/llm'
 
     this.endpoints = {
       anthropic: '/a/v1/messages',
-      openai: '/o/v1/responses'
+      openai: '/o/v1/responses',
+      comm: '/o/v1/chat/completions'
     }
 
-    this.userAgent = 'factory-cli/0.19.12'
+    this.userAgent = 'factory-cli/0.32.1'
     this.systemPrompt = SYSTEM_PROMPT
     this.API_KEY_STICKY_PREFIX = 'droid_api_key'
   }
@@ -36,8 +37,12 @@ class DroidRelayService {
     }
 
     const normalized = String(endpointType).toLowerCase()
-    if (normalized === 'openai' || normalized === 'common') {
+    if (normalized === 'openai') {
       return 'openai'
+    }
+
+    if (normalized === 'comm') {
+      return 'comm'
     }
 
     if (normalized === 'anthropic') {
@@ -236,7 +241,8 @@ class DroidRelayService {
         accessToken,
         normalizedRequestBody,
         normalizedEndpoint,
-        clientHeaders
+        clientHeaders,
+        account
       )
 
       if (selectedApiKey) {
@@ -330,7 +336,12 @@ class DroidRelayService {
         )
       }
     } catch (error) {
-      logger.error(`❌ Droid relay error: ${error.message}`, error)
+      // 客户端主动断开连接是正常情况，使用 INFO 级别
+      if (error.message === 'Client disconnected') {
+        logger.info(`🔌 Droid relay ended: Client disconnected`)
+      } else {
+        logger.error(`❌ Droid relay error: ${error.message}`, error)
+      }
 
       const status = error?.response?.status
       if (status >= 400 && status < 500) {
@@ -559,8 +570,8 @@ class DroidRelayService {
           if (endpointType === 'anthropic') {
             // Anthropic Messages API 格式
             this._parseAnthropicUsageFromSSE(chunkStr, buffer, currentUsageData)
-          } else if (endpointType === 'openai') {
-            // OpenAI Chat Completions 格式
+          } else if (endpointType === 'openai' || endpointType === 'comm') {
+            // OpenAI Chat Completions 格式（openai 和 comm 共用）
             this._parseOpenAIUsageFromSSE(chunkStr, buffer, currentUsageData)
           }
 
@@ -628,7 +639,7 @@ class DroidRelayService {
       // 客户端断开连接时清理
       clientResponse.on('close', () => {
         if (req && !req.destroyed) {
-          req.destroy()
+          req.destroy(new Error('Client disconnected'))
         }
       })
 
@@ -716,8 +727,29 @@ class DroidRelayService {
             // 兼容传统 Chat Completions usage 字段
             if (data.usage) {
               currentUsageData.input_tokens = data.usage.prompt_tokens || 0
-              currentUsageData.output_tokens = data.usage.completion_tokens || 0
               currentUsageData.total_tokens = data.usage.total_tokens || 0
+              // completion_tokens 可能缺失（如某些模型响应），从 total_tokens - prompt_tokens 计算
+              if (
+                data.usage.completion_tokens !== undefined &&
+                data.usage.completion_tokens !== null
+              ) {
+                currentUsageData.output_tokens = data.usage.completion_tokens
+              } else if (currentUsageData.total_tokens > 0 && currentUsageData.input_tokens >= 0) {
+                currentUsageData.output_tokens = Math.max(
+                  0,
+                  currentUsageData.total_tokens - currentUsageData.input_tokens
+                )
+              } else {
+                currentUsageData.output_tokens = 0
+              }
+
+              // Capture cache tokens from OpenAI format
+              currentUsageData.cache_read_input_tokens =
+                data.usage.input_tokens_details?.cached_tokens || 0
+              currentUsageData.cache_creation_input_tokens =
+                data.usage.input_tokens_details?.cache_creation_input_tokens ||
+                data.usage.cache_creation_input_tokens ||
+                0
 
               logger.debug('📊 Droid OpenAI usage:', currentUsageData)
             }
@@ -727,8 +759,26 @@ class DroidRelayService {
               const { usage } = data.response
               currentUsageData.input_tokens =
                 usage.input_tokens || usage.prompt_tokens || usage.total_tokens || 0
-              currentUsageData.output_tokens = usage.output_tokens || usage.completion_tokens || 0
               currentUsageData.total_tokens = usage.total_tokens || 0
+              // completion_tokens/output_tokens 可能缺失，从 total_tokens - input_tokens 计算
+              if (usage.output_tokens !== undefined || usage.completion_tokens !== undefined) {
+                currentUsageData.output_tokens = usage.output_tokens || usage.completion_tokens || 0
+              } else if (currentUsageData.total_tokens > 0 && currentUsageData.input_tokens >= 0) {
+                currentUsageData.output_tokens = Math.max(
+                  0,
+                  currentUsageData.total_tokens - currentUsageData.input_tokens
+                )
+              } else {
+                currentUsageData.output_tokens = 0
+              }
+
+              // Capture cache tokens from OpenAI Response API format
+              currentUsageData.cache_read_input_tokens =
+                usage.input_tokens_details?.cached_tokens || 0
+              currentUsageData.cache_creation_input_tokens =
+                usage.input_tokens_details?.cache_creation_input_tokens ||
+                usage.cache_creation_input_tokens ||
+                0
 
               logger.debug('📊 Droid OpenAI response usage:', currentUsageData)
             }
@@ -763,7 +813,7 @@ class DroidRelayService {
       return false
     }
 
-    if (endpointType === 'openai') {
+    if (endpointType === 'openai' || endpointType === 'comm') {
       if (lower.includes('data: [done]')) {
         return true
       }
@@ -817,9 +867,16 @@ class DroidRelayService {
         usageData.inputTokens ??
         usageData.total_input_tokens
     )
-    const outputTokens = toNumber(
+    const totalTokens = toNumber(usageData.total_tokens ?? usageData.totalTokens)
+
+    // 尝试从多个字段获取 output_tokens
+    let outputTokens = toNumber(
       usageData.output_tokens ?? usageData.completion_tokens ?? usageData.outputTokens
     )
+    // 如果 output_tokens 为 0 但有 total_tokens，从差值计算
+    if (outputTokens === 0 && totalTokens > 0 && inputTokens >= 0) {
+      outputTokens = Math.max(0, totalTokens - inputTokens)
+    }
     const cacheReadTokens = toNumber(
       usageData.cache_read_input_tokens ??
         usageData.cacheReadTokens ??
@@ -895,13 +952,49 @@ class DroidRelayService {
   }
 
   /**
+   * 根据模型名称推断 API provider
+   */
+  _inferProviderFromModel(model) {
+    if (!model || typeof model !== 'string') {
+      return 'baseten'
+    }
+
+    const lowerModel = model.toLowerCase()
+
+    // Google Gemini 模型
+    if (lowerModel.startsWith('gemini-') || lowerModel.includes('gemini')) {
+      return 'google'
+    }
+
+    // Anthropic Claude 模型
+    if (lowerModel.startsWith('claude-') || lowerModel.includes('claude')) {
+      return 'anthropic'
+    }
+
+    // OpenAI GPT 模型
+    if (lowerModel.startsWith('gpt-') || lowerModel.includes('gpt')) {
+      return 'azure_openai'
+    }
+
+    // GLM 模型使用 fireworks
+    if (lowerModel.startsWith('glm-') || lowerModel.includes('glm')) {
+      return 'fireworks'
+    }
+
+    // 默认使用 baseten
+    return 'baseten'
+  }
+
+  /**
    * 构建请求头
    */
-  _buildHeaders(accessToken, requestBody, endpointType, clientHeaders = {}) {
+  _buildHeaders(accessToken, requestBody, endpointType, clientHeaders = {}, account = null) {
+    // 使用账户配置的 userAgent 或默认值
+    const userAgent = account?.userAgent || this.userAgent
     const headers = {
       'content-type': 'application/json',
       authorization: `Bearer ${accessToken}`,
-      'user-agent': this.userAgent,
+      'user-agent': userAgent,
       'x-factory-client': 'cli',
       connection: 'keep-alive'
     }
@@ -918,9 +1011,21 @@ class DroidRelayService {
       }
     }
 
-    // OpenAI 特定头
+    // OpenAI 特定头 - 根据模型动态选择 provider
     if (endpointType === 'openai') {
-      headers['x-api-provider'] = 'azure_openai'
+      const model = (requestBody?.model || '').toLowerCase()
+      // -max 模型使用 openai provider，其他使用 azure_openai
+      if (model.includes('-max')) {
+        headers['x-api-provider'] = 'openai'
+      } else {
+        headers['x-api-provider'] = 'azure_openai'
+      }
+    }
+
+    // Comm 端点根据模型动态设置 provider
+    if (endpointType === 'comm') {
+      const model = requestBody?.model
+      headers['x-api-provider'] = this._inferProviderFromModel(model)
     }
 
     // 生成会话 ID（如果客户端没有提供）
@@ -1034,6 +1139,36 @@ class DroidRelayService {
       }
     }
 
+    // Comm 端点：在 messages 数组前注入 system 消息
+    if (endpointType === 'comm') {
+      if (this.systemPrompt && Array.isArray(processedBody.messages)) {
+        const hasSystemMessage = processedBody.messages.some((m) => m && m.role === 'system')
+
+        if (hasSystemMessage) {
+          // 如果已有 system 消息，在第一个 system 消息的 content 前追加
+          const firstSystemIndex = processedBody.messages.findIndex((m) => m && m.role === 'system')
+          if (firstSystemIndex !== -1) {
+            const existingContent = processedBody.messages[firstSystemIndex].content || ''
+            if (
+              typeof existingContent === 'string' &&
+              !existingContent.startsWith(this.systemPrompt)
+            ) {
+              processedBody.messages[firstSystemIndex] = {
+                ...processedBody.messages[firstSystemIndex],
+                content: this.systemPrompt + existingContent
+              }
+            }
+          }
+        } else {
+          // 如果没有 system 消息，在 messages 数组最前面插入
+          processedBody.messages = [
+            { role: 'system', content: this.systemPrompt },
+            ...processedBody.messages
+          ]
+        }
+      }
+    }
+
     // 处理 temperature 和 top_p 参数
     const hasValidTemperature =
       processedBody.temperature !== undefined && processedBody.temperature !== null
@@ -1080,11 +1215,17 @@ class DroidRelayService {
         cacheReadTokens: normalizedUsage.cache_read_input_tokens || 0
       }
 
+      const endpointLabel =
+        endpointType === 'anthropic'
+          ? ' [anthropic]'
+          : endpointType === 'comm'
+            ? ' [comm]'
+            : ' [openai]'
       await this._applyRateLimitTracking(
         clientRequest?.rateLimitInfo,
         usageSummary,
         model,
-        endpointType === 'anthropic' ? ' [anthropic]' : ' [openai]'
+        endpointLabel
       )
 
       logger.success(

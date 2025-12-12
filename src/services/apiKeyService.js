@@ -11,6 +11,7 @@ const ACCOUNT_TYPE_CONFIG = {
   'openai-responses': { prefix: 'openai_responses_account:' },
   'azure-openai': { prefix: 'azure_openai:account:' },
   gemini: { prefix: 'gemini_account:' },
+  'gemini-api': { prefix: 'gemini_api_account:' },
   droid: { prefix: 'droid:account:' }
 }
 
@@ -21,6 +22,7 @@ const ACCOUNT_TYPE_PRIORITY = [
   'claude',
   'claude-console',
   'gemini',
+  'gemini-api',
   'droid'
 ]
 
@@ -31,6 +33,7 @@ const ACCOUNT_CATEGORY_MAP = {
   'openai-responses': 'openai',
   'azure-openai': 'openai',
   gemini: 'gemini',
+  'gemini-api': 'gemini',
   droid: 'droid'
 }
 
@@ -48,6 +51,9 @@ function normalizeAccountTypeKey(type) {
   if (lower === 'azure_openai' || lower === 'azureopenai' || lower === 'azure-openai') {
     return 'azure-openai'
   }
+  if (lower === 'gemini_api' || lower === 'gemini-api') {
+    return 'gemini-api'
+  }
   return lower
 }
 
@@ -57,6 +63,9 @@ function sanitizeAccountIdForType(accountId, accountType) {
   }
   if (accountType === 'openai-responses') {
     return accountId.replace(/^responses:/, '')
+  }
+  if (accountType === 'gemini-api') {
+    return accountId.replace(/^api:/, '')
   }
   return accountId
 }
@@ -149,6 +158,14 @@ class ApiKeyService {
     // 保存API Key数据并建立哈希映射
     await redis.setApiKey(keyId, keyData, hashedKey)
 
+    // 同步添加到费用排序索引
+    try {
+      const costRankService = require('./costRankService')
+      await costRankService.addKeyToIndexes(keyId)
+    } catch (err) {
+      logger.warn(`Failed to add key ${keyId} to cost rank indexes:`, err.message)
+    }
+
     logger.success(`🔑 Generated new API key: ${name} (${keyId})`)
 
     return {
@@ -203,6 +220,10 @@ class ApiKeyService {
       const keyData = await redis.findApiKeyByHash(hashedKey)
 
       if (!keyData) {
+        // ⚠️ 警告：映射表查找失败，可能是竞态条件或映射表损坏
+        logger.warn(
+          `⚠️ API key not found in hash map: ${hashedKey.substring(0, 16)}... (possible race condition or corrupted hash map)`
+        )
         return { valid: false, error: 'API key not found' }
       }
 
@@ -362,7 +383,8 @@ class ApiKeyService {
 
       // 检查是否激活
       if (keyData.isActive !== 'true') {
-        return { valid: false, error: 'API key is disabled' }
+        const keyName = keyData.name || 'Unknown'
+        return { valid: false, error: `API Key "${keyName}" 已被禁用`, keyName }
       }
 
       // 注意：这里不处理激活逻辑，保持 API Key 的未激活状态
@@ -373,7 +395,8 @@ class ApiKeyService {
         keyData.expiresAt &&
         new Date() > new Date(keyData.expiresAt)
       ) {
-        return { valid: false, error: 'API key has expired' }
+        const keyName = keyData.name || 'Unknown'
+        return { valid: false, error: `API Key "${keyName}" 已过期`, keyName }
       }
 
       // 如果API Key属于某个用户，检查用户是否被禁用
@@ -703,10 +726,11 @@ class ApiKeyService {
 
       updatedData.updatedAt = new Date().toISOString()
 
-      // 更新时不需要重新建立哈希映射，因为API Key本身没有变化
-      await redis.setApiKey(keyId, updatedData)
+      // 传递hashedKey以确保映射表一致性
+      // keyData.apiKey 存储的就是 hashedKey（见generateApiKey第123行）
+      await redis.setApiKey(keyId, updatedData, keyData.apiKey)
 
-      logger.success(`📝 Updated API key: ${keyId}`)
+      logger.success(`📝 Updated API key: ${keyId}, hashMap updated`)
 
       return { success: true }
     } catch (error) {
@@ -738,6 +762,14 @@ class ApiKeyService {
       // 从哈希映射中移除（这样就不能再使用这个key进行API调用）
       if (keyData.apiKey) {
         await redis.deleteApiKeyHash(keyData.apiKey)
+      }
+
+      // 从费用排序索引中移除
+      try {
+        const costRankService = require('./costRankService')
+        await costRankService.removeKeyFromIndexes(keyId)
+      } catch (err) {
+        logger.warn(`Failed to remove key ${keyId} from cost rank indexes:`, err.message)
       }
 
       logger.success(`🗑️ Soft deleted API key: ${keyId} by ${deletedBy} (${deletedByType})`)
@@ -789,6 +821,14 @@ class ApiKeyService {
           name: keyData.name,
           isActive: 'true'
         })
+      }
+
+      // 重新添加到费用排序索引
+      try {
+        const costRankService = require('./costRankService')
+        await costRankService.addKeyToIndexes(keyId)
+      } catch (err) {
+        logger.warn(`Failed to add restored key ${keyId} to cost rank indexes:`, err.message)
       }
 
       logger.success(`✅ Restored API key: ${keyId} by ${restoredBy} (${restoredByType})`)
@@ -1322,6 +1362,9 @@ class ApiKeyService {
       if (typeof rawAccountId === 'string' && rawAccountId.startsWith('responses:')) {
         candidateIds.add(rawAccountId.replace(/^responses:/, ''))
       }
+      if (typeof rawAccountId === 'string' && rawAccountId.startsWith('api:')) {
+        candidateIds.add(rawAccountId.replace(/^api:/, ''))
+      }
     }
 
     if (candidateIds.size === 0) {
@@ -1346,6 +1389,7 @@ class ApiKeyService {
         pushType('azure-openai')
       } else if (lowerModel.includes('gemini')) {
         pushType('gemini')
+        pushType('gemini-api')
       } else if (lowerModel.includes('claude') || lowerModel.includes('anthropic')) {
         pushType('claude')
         pushType('claude-console')
@@ -1527,7 +1571,15 @@ class ApiKeyService {
         permissions: keyData.permissions,
         dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
         totalCostLimit: parseFloat(keyData.totalCostLimit || 0),
-        droidAccountId: keyData.droidAccountId
+        // 所有平台账户绑定字段
+        claudeAccountId: keyData.claudeAccountId,
+        claudeConsoleAccountId: keyData.claudeConsoleAccountId,
+        geminiAccountId: keyData.geminiAccountId,
+        openaiAccountId: keyData.openaiAccountId,
+        bedrockAccountId: keyData.bedrockAccountId,
+        droidAccountId: keyData.droidAccountId,
+        azureOpenaiAccountId: keyData.azureOpenaiAccountId,
+        ccrAccountId: keyData.ccrAccountId
       }
     } catch (error) {
       logger.error('❌ Failed to get API key by ID:', error)
@@ -1670,6 +1722,7 @@ class ApiKeyService {
         claude: 'claudeAccountId',
         'claude-console': 'claudeConsoleAccountId',
         gemini: 'geminiAccountId',
+        'gemini-api': 'geminiAccountId', // 特殊处理，带 api: 前缀
         openai: 'openaiAccountId',
         'openai-responses': 'openaiAccountId', // 特殊处理，带 responses: 前缀
         azure_openai: 'azureOpenaiAccountId',
@@ -1692,6 +1745,9 @@ class ApiKeyService {
       if (accountType === 'openai-responses') {
         // OpenAI-Responses 特殊处理：查找 openaiAccountId 字段中带 responses: 前缀的
         boundKeys = allKeys.filter((key) => key.openaiAccountId === `responses:${accountId}`)
+      } else if (accountType === 'gemini-api') {
+        // Gemini-API 特殊处理：查找 geminiAccountId 字段中带 api: 前缀的
+        boundKeys = allKeys.filter((key) => key.geminiAccountId === `api:${accountId}`)
       } else {
         // 其他账号类型正常匹配
         boundKeys = allKeys.filter((key) => key[field] === accountId)
@@ -1702,6 +1758,8 @@ class ApiKeyService {
         const updates = {}
         if (accountType === 'openai-responses') {
           updates.openaiAccountId = null
+        } else if (accountType === 'gemini-api') {
+          updates.geminiAccountId = null
         } else if (accountType === 'claude-console') {
           updates.claudeConsoleAccountId = null
         } else {
