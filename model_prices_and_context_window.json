@@ -13006,6 +13006,7 @@
         "supports_function_calling": true,
         "supports_pdf_input": true,
         "supports_prompt_caching": true,
+        "supports_reasoning": true,
         "supports_response_schema": true,
         "supports_system_messages": true,
         "supports_tool_choice": true,
@@ -24545,6 +24546,16 @@
         "litellm_provider": "openai",
         "mode": "image_generation",
         "output_cost_per_pixel": 0.0
+    },
+    "linkup/search": {
+        "input_cost_per_query": 5.87e-03,
+        "litellm_provider": "linkup",
+        "mode": "search"
+    },
+    "linkup/search-deep": {
+        "input_cost_per_query": 58.67e-03,
+        "litellm_provider": "linkup",
+        "mode": "search"
     },
     "tavily/search": {
         "input_cost_per_query": 0.008,
