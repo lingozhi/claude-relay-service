@@ -60,6 +60,22 @@ else
   fi
 fi
 
+# 检查并初始化定价数据
+echo "📋 检查定价数据..."
+if [ ! -f "/app/data/model_pricing.json" ]; then
+  echo "📥 定价数据不存在，从备用文件复制..."
+  if [ -f "/app/resources/model-pricing/model_prices_and_context_window.json" ]; then
+    # 确保 data 目录存在
+    mkdir -p /app/data
+    cp /app/resources/model-pricing/model_prices_and_context_window.json /app/data/model_pricing.json
+    echo "✅ 定价数据已初始化"
+  else
+    echo "⚠️  警告: 备用定价文件不存在，将在运行时自动下载"
+  fi
+else
+  echo "✅ 定价数据已存在"
+fi
+
 # 启动应用
 echo "🌐 启动 Claude Relay Service..."
 exec "$@"

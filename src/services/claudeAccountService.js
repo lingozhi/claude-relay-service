@@ -2989,8 +2989,8 @@ class ClaudeAccountService {
             if (latestAccount.sessionWindowEnd) {
               const windowEnd = new Date(latestAccount.sessionWindowEnd)
 
-              // 使用严格的时间比较，添加1分钟缓冲避免边界问题
-              if (now.getTime() > windowEnd.getTime() + 60000) {
+              // 使用严格的时间比较，添加1小时缓冲避免边界问题
+              if (now.getTime() > windowEnd.getTime() + 3600000) {
                 shouldRecover = true
 
                 // 计算新的窗口时间（基于窗口结束时间，而不是当前时间）
@@ -3012,9 +3012,9 @@ class ClaudeAccountService {
                 const stoppedAt = new Date(latestAccount.fiveHourStoppedAt)
                 const hoursSinceStopped = (now.getTime() - stoppedAt.getTime()) / (1000 * 60 * 60)
 
-                // 使用严格的5小时判断，加上1分钟缓冲
-                if (hoursSinceStopped > 5.017) {
-                  // 5小时1分钟
+                // 使用严格的5小时判断，加上1小时缓冲
+                if (hoursSinceStopped > 6) {
+                  // 6小时（5小时限制 + 1小时缓冲）
                   shouldRecover = true
                   newWindowStart = this._calculateSessionWindowStart(now)
                   newWindowEnd = this._calculateSessionWindowEnd(newWindowStart)
