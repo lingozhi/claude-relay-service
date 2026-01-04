@@ -29,6 +29,9 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - HOST=0.0.0.0
+      
+      # 🔧 请求体大小配置
+      - REQUEST_MAX_SIZE_MB=60
 
       # 🔒 HTTPS 配置 (可选 - 独立 HTTPS 服务器)
       - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
