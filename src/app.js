@@ -115,7 +115,7 @@ class Application {
       // 🛡️ 安全中间件
       this.app.use(
         helmet({
-          contentSecurityPolicy: false, // 允许内联样式和脚本
+          contentSecurityPolicy: false, // 允许内联样式 and 脚本
           crossOriginEmbedderPolicy: false
         })
       )
@@ -386,7 +386,11 @@ class Application {
 
       logger.success('✅ Application initialized successfully')
     } catch (error) {
-      logger.error('💥 Application initialization failed:', error)
+      logger.error('💥 Application initialization failed!')
+      logger.error(`❌ Error Message: ${error.message}`)
+      if (error.stack) {
+        logger.error(`📚 Stack Trace: ${error.stack}`)
+      }
       throw error
     }
   }
@@ -742,10 +746,6 @@ class Application {
 
         // 使用 Lua 脚本批量清理所有过期项
         for (const key of keys) {
-          // 跳过已知非 Sorted Set 类型的键（这些键有各自的清理逻辑）
-          // - concurrency:queue:stats:* 是 Hash 类型
-          // - concurrency:queue:wait_times:* 是 List 类型
-          // - concurrency:queue:* (不含stats/wait_times) 是 String 类型
           if (
             key.startsWith('concurrency:queue:stats:') ||
             key.startsWith('concurrency:queue:wait_times:') ||
@@ -757,33 +757,23 @@ class Application {
           }
 
           try {
-            // 使用原子 Lua 脚本：先检查类型，再执行清理
-            // 返回值：0 = 正常清理无删除，1 = 清理后删除空键，-1 = 遗留键已删除
             const result = await redis.client.eval(
               `
               local key = KEYS[1]
               local now = tonumber(ARGV[1])
 
-              -- 先检查键类型，只对 Sorted Set 执行清理
               local keyType = redis.call('TYPE', key)
               if keyType.ok ~= 'zset' then
-                -- 非 ZSET 类型的遗留键，直接删除
                 redis.call('DEL', key)
                 return -1
               end
 
-              -- 清理过期项
               redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
-
-              -- 获取剩余计数
               local count = redis.call('ZCARD', key)
-
-              -- 如果计数为0，删除键
               if count <= 0 then
                 redis.call('DEL', key)
                 return 1
               end
-
               return 0
             `,
               1,
@@ -809,21 +799,17 @@ class Application {
       } catch (error) {
         logger.error('❌ Concurrency cleanup task failed:', error)
       }
-    }, 60000) // 每分钟执行一次
+    }, 60000)
 
     logger.info('🔢 Concurrency cleanup task started (running every 1 minute)')
 
     // 📬 启动用户消息队列服务
     const userMessageQueueService = require('./services/userMessageQueueService')
-    // 先清理服务重启后残留的锁，防止旧锁阻塞新请求
     userMessageQueueService.cleanupStaleLocks().then(() => {
-      // 然后启动定时清理任务
       userMessageQueueService.startCleanupTask()
     })
 
     // 🚦 清理服务重启后残留的并发排队计数器
-    // 多实例部署时建议关闭此开关，避免新实例启动时清空其他实例的队列计数
-    // 可通过 DELETE /admin/concurrency/queue 接口手动清理
     const clearQueuesOnStartup = process.env.CLEAR_CONCURRENCY_QUEUES_ON_STARTUP !== 'false'
     if (clearQueuesOnStartup) {
       redis.clearAllConcurrencyQueues().catch((error) => {
@@ -836,7 +822,6 @@ class Application {
     }
 
     // 🧪 启动账户定时测试调度器
-    // 根据配置定期测试账户连通性并保存测试历史
     const accountTestSchedulerEnabled =
       process.env.ACCOUNT_TEST_SCHEDULER_ENABLED !== 'false' &&
       config.accountTestScheduler?.enabled !== false
@@ -853,38 +838,40 @@ class Application {
     const shutdown = async (signal) => {
       logger.info(`🛑 Received ${signal}, starting graceful shutdown...`)
 
-      let serversToClose = 0
-      let serversClosed = 0
+      const forceExitTimeout = setTimeout(() => {
+        logger.warn('⚠️ Forced shutdown due to timeout')
+        process.exit(1)
+      }, 10000)
 
       const performCleanup = async () => {
-        // 清理 pricing service 的文件监听器
         try {
-          pricingService.cleanup()
-          logger.info('💰 Pricing service cleaned up')
-        } catch (error) {
-          logger.error('❌ Error cleaning up pricing service:', error)
-        }
+          // 清理 pricing service 的文件监听器
+          try {
+            pricingService.cleanup()
+            logger.info('💰 Pricing service cleaned up')
+          } catch (error) {
+            logger.error('❌ Error cleaning up pricing service:', error)
+          }
 
-        // 清理 model service 的文件监听器
-        try {
-          const modelService = require('./services/modelService')
-          modelService.cleanup()
-          logger.info('📋 Model service cleaned up')
-        } catch (error) {
-          logger.error('❌ Error cleaning up model service:', error)
-        }
+          // 清理 model service
+          try {
+            const modelService = require('./services/modelService')
+            modelService.cleanup()
+            logger.info('📋 Model service cleaned up')
+          } catch (error) {
+            logger.error('❌ Error cleaning up model service:', error)
+          }
 
-        // 停止限流清理服务
-        try {
-          const rateLimitCleanupService = require('./services/rateLimitCleanupService')
-          rateLimitCleanupService.stop()
-          logger.info('🚨 Rate limit cleanup service stopped')
-        } catch (error) {
-          logger.error('❌ Error stopping rate limit cleanup service:', error)
-        }
+          // 停止限流清理服务
+          try {
+            const rateLimitCleanupService = require('./services/rateLimitCleanupService')
+            rateLimitCleanupService.stop()
+            logger.info('🚨 Rate limit cleanup service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping rate limit cleanup service:', error)
+          }
 
-
-          // 停止用户消息队列清理服务
+          // 停止消息队列清理服务
           try {
             const userMessageQueueService = require('./services/userMessageQueueService')
             userMessageQueueService.stopCleanupTask()
@@ -902,7 +889,7 @@ class Application {
             logger.error('❌ Error stopping cost rank service:', error)
           }
 
-          // 停止账户定时测试调度器
+          // 停止账户定时测试
           try {
             const accountTestSchedulerService = require('./services/accountTestSchedulerService')
             accountTestSchedulerService.stop()
@@ -911,45 +898,43 @@ class Application {
             logger.error('❌ Error stopping account test scheduler service:', error)
           }
 
-          // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
+          // 🔢 清理并发计数
           try {
-            logger.info('🔢 Cleaning up all concurrency counters...')
             const keys = await redis.keys('concurrency:*')
             if (keys.length > 0) {
               await redis.client.del(...keys)
               logger.info(`✅ Cleaned ${keys.length} concurrency keys`)
-            } else {
-              logger.info('✅ No concurrency keys to clean')
             }
           } catch (error) {
-            logger.error('❌ Error cleaning up concurrency counters:', error)
-            // 不阻止退出流程
-
+            logger.error('❌ Error cleaning up concurrency:', error)
           }
-        } catch (error) {
-          logger.error('❌ Error cleaning up concurrency counters:', error)
-          // 不阻止退出流程
-        }
 
-        try {
-          await redis.disconnect()
-          logger.info('👋 Redis disconnected')
-        } catch (error) {
-          logger.error('❌ Error disconnecting Redis:', error)
-        }
+          try {
+            await redis.disconnect()
+            logger.info('👋 Redis disconnected')
+          } catch (error) {
+            logger.error('❌ Error disconnecting Redis:', error)
+          }
 
-        logger.success('✅ Graceful shutdown completed')
-        process.exit(0)
+          clearTimeout(forceExitTimeout)
+          logger.success('✅ Graceful shutdown completed')
+          process.exit(0)
+        } catch (error) {
+          logger.error('❌ Error during cleanup:', error)
+          process.exit(1)
+        }
       }
+
+      let serversToClose = 0
+      let serversClosed = 0
 
       const onServerClosed = () => {
         serversClosed++
-        if (serversClosed === serversToClose) {
+        if (serversToClose === 0 || serversClosed === serversToClose) {
           performCleanup()
         }
       }
 
-      // 关闭 HTTPS 服务器
       if (this.httpsServer) {
         serversToClose++
         this.httpsServer.close(() => {
@@ -958,7 +943,6 @@ class Application {
         })
       }
 
-      // 关闭 HTTP 服务器
       if (this.httpServer) {
         serversToClose++
         this.httpServer.close(() => {
@@ -967,27 +951,17 @@ class Application {
         })
       }
 
-      // 如果没有服务器在运行，直接退出
       if (serversToClose === 0) {
         await performCleanup()
       }
-
-      // 强制关闭超时
-      setTimeout(() => {
-        logger.warn('⚠️ Forced shutdown due to timeout')
-        process.exit(1)
-      }, 10000)
     }
 
     process.on('SIGTERM', () => shutdown('SIGTERM'))
     process.on('SIGINT', () => shutdown('SIGINT'))
-
-    // 处理未捕获异常
     process.on('uncaughtException', (error) => {
       logger.error('💥 Uncaught exception:', error)
       shutdown('uncaughtException')
     })
-
     process.on('unhandledRejection', (reason, promise) => {
       logger.error('💥 Unhandled rejection at:', promise, 'reason:', reason)
       shutdown('unhandledRejection')

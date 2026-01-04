@@ -70,16 +70,28 @@ class RedisClient {
 
   async connect() {
     try {
-      this.client = new Redis({
-        host: config.redis.host,
-        port: config.redis.port,
-        password: config.redis.password,
-        db: config.redis.db,
-        retryDelayOnFailover: config.redis.retryDelayOnFailover,
-        maxRetriesPerRequest: config.redis.maxRetriesPerRequest,
-        lazyConnect: config.redis.lazyConnect,
-        tls: config.redis.enableTLS ? {} : false
-      })
+      const redisUrl = process.env.REDIS_URL
+
+      if (redisUrl) {
+        logger.info('🔗 Connecting to Redis using REDIS_URL...')
+        this.client = new Redis(redisUrl, {
+          retryDelayOnFailover: config.redis.retryDelayOnFailover,
+          maxRetriesPerRequest: config.redis.maxRetriesPerRequest,
+          lazyConnect: config.redis.lazyConnect,
+          tls: redisUrl.startsWith('rediss://') || config.redis.enableTLS ? {} : false
+        })
+      } else {
+        this.client = new Redis({
+          host: config.redis.host,
+          port: config.redis.port,
+          password: config.redis.password,
+          db: config.redis.db,
+          retryDelayOnFailover: config.redis.retryDelayOnFailover,
+          maxRetriesPerRequest: config.redis.maxRetriesPerRequest,
+          lazyConnect: config.redis.lazyConnect,
+          tls: config.redis.enableTLS ? {} : false
+        })
+      }
 
       this.client.on('connect', () => {
         this.isConnected = true
