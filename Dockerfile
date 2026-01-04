@@ -8,8 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # 🔽 安装依赖 (生产环境) - 使用 BuildKit 缓存加速
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci --only=production
+RUN npm ci --only=production
 
 # 🎯 前端构建阶段 (与后端依赖并行)
 FROM node:18-alpine AS frontend-builder
@@ -21,8 +20,7 @@ WORKDIR /app/web/admin-spa
 COPY web/admin-spa/package*.json ./
 
 # 🔽 安装前端依赖 - 使用 BuildKit 缓存加速
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci
+RUN npm ci
 
 # 📋 复制前端源代码
 COPY web/admin-spa/ ./
@@ -69,13 +67,13 @@ RUN mkdir -p logs data temp
 
 # 🔧 预先创建配置文件
 RUN if [ ! -f "/app/config/config.js" ] && [ -f "/app/config/config.example.js" ]; then \
-        cp /app/config/config.example.js /app/config/config.js; \
+    cp /app/config/config.example.js /app/config/config.js; \
     fi
 
 # 📊 预先复制定价数据文件
 RUN if [ -f "/app/resources/model-pricing/model_prices_and_context_window.json" ]; then \
-        cp /app/resources/model-pricing/model_prices_and_context_window.json /app/data/model_pricing.json && \
-        echo "✅ Model pricing data initialized from fallback"; \
+    cp /app/resources/model-pricing/model_prices_and_context_window.json /app/data/model_pricing.json && \
+    echo "✅ Model pricing data initialized from fallback"; \
     fi
 
 # 🌐 暴露端口
