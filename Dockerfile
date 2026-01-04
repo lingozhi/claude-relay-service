@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # 🔽 安装依赖 (生产环境) - 使用 BuildKit 缓存加速
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci --only=production
 
 # 🎯 前端构建阶段 (与后端依赖并行)
@@ -21,7 +21,7 @@ WORKDIR /app/web/admin-spa
 COPY web/admin-spa/package*.json ./
 
 # 🔽 安装前端依赖 - 使用 BuildKit 缓存加速
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
 
 # 📋 复制前端源代码
