@@ -477,6 +477,36 @@
                           <i class="fas fa-check text-xs text-white"></i>
                         </div>
                       </label>
+                      <label
+                        class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
+                        :class="[
+                          form.platform === 'gemini-antigravity'
+                            ? 'border-purple-500 bg-purple-50 dark:border-purple-400 dark:bg-purple-900/30'
+                            : 'border-gray-300 bg-white hover:border-purple-400 hover:bg-purple-50/50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-purple-500 dark:hover:bg-purple-900/20'
+                        ]"
+                      >
+                        <input
+                          v-model="form.platform"
+                          class="sr-only"
+                          type="radio"
+                          value="gemini-antigravity"
+                        />
+                        <div class="flex items-center gap-2">
+                          <i class="fas fa-rocket text-sm text-purple-600 dark:text-purple-400"></i>
+                          <div>
+                            <span class="block text-xs font-medium text-gray-900 dark:text-gray-100"
+                              >Antigravity</span
+                            >
+                            <span class="text-xs text-gray-500 dark:text-gray-400">OAuth</span>
+                          </div>
+                        </div>
+                        <div
+                          v-if="form.platform === 'gemini-antigravity'"
+                          class="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-purple-500"
+                        >
+                          <i class="fas fa-check text-xs text-white"></i>
+                        </div>
+                      </label>
 
                       <label
                         class="group relative flex cursor-pointer items-center rounded-md border p-2 transition-all"
@@ -772,7 +802,7 @@
             </div>
 
             <!-- Gemini 项目 ID 字段 -->
-            <div v-if="form.platform === 'gemini'">
+            <div v-if="form.platform === 'gemini' || form.platform === 'gemini-antigravity'">
               <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                 >项目 ID (可选)</label
               >
@@ -822,41 +852,194 @@
             </div>
 
             <!-- Bedrock 特定字段 -->
-            <div v-if="form.platform === 'bedrock' && !isEdit" class="space-y-4">
+            <div v-if="form.platform === 'bedrock'" class="space-y-4">
+              <!-- 凭证类型选择器 -->
               <div>
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-                  >AWS 访问密钥 ID *</label
+                  >凭证类型 *</label
                 >
-                <input
-                  v-model="form.accessKeyId"
-                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
-                  :class="{ 'border-red-500': errors.accessKeyId }"
-                  placeholder="请输入 AWS Access Key ID"
-                  required
-                  type="text"
-                />
-                <p v-if="errors.accessKeyId" class="mt-1 text-xs text-red-500">
-                  {{ errors.accessKeyId }}
-                </p>
+                <div v-if="!isEdit" class="flex gap-4">
+                  <label class="flex cursor-pointer items-center">
+                    <input
+                      v-model="form.credentialType"
+                      class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                      type="radio"
+                      value="access_key"
+                    />
+                    <span class="text-sm text-gray-700 dark:text-gray-300"
+                      >AWS Access Key（访问密钥）</span
+                    >
+                  </label>
+                  <label class="flex cursor-pointer items-center">
+                    <input
+                      v-model="form.credentialType"
+                      class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                      type="radio"
+                      value="bearer_token"
+                    />
+                    <span class="text-sm text-gray-700 dark:text-gray-300"
+                      >Bearer Token（长期令牌）</span
+                    >
+                  </label>
+                </div>
+                <div v-else class="flex gap-4">
+                  <label class="flex items-center opacity-60">
+                    <input
+                      v-model="form.credentialType"
+                      class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                      disabled
+                      type="radio"
+                      value="access_key"
+                    />
+                    <span class="text-sm text-gray-700 dark:text-gray-300"
+                      >AWS Access Key（访问密钥）</span
+                    >
+                  </label>
+                  <label class="flex items-center opacity-60">
+                    <input
+                      v-model="form.credentialType"
+                      class="mr-2 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                      disabled
+                      type="radio"
+                      value="bearer_token"
+                    />
+                    <span class="text-sm text-gray-700 dark:text-gray-300"
+                      >Bearer Token（长期令牌）</span
+                    >
+                  </label>
+                </div>
+                <div
+                  class="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/30"
+                >
+                  <div class="flex items-start gap-2">
+                    <i class="fas fa-info-circle mt-0.5 text-blue-600 dark:text-blue-400" />
+                    <div class="text-xs text-blue-700 dark:text-blue-300">
+                      <p v-if="form.credentialType === 'access_key'" class="font-medium">
+                        使用 AWS Access Key ID 和 Secret Access Key 进行身份验证（支持临时凭证）
+                      </p>
+                      <p v-else class="font-medium">
+                        使用 AWS Bedrock API Keys 生成的 Bearer Token
+                        进行身份验证，更简单、权限范围更小
+                      </p>
+                      <p v-if="isEdit" class="mt-1 text-xs italic">
+                        💡 编辑模式下凭证类型不可更改，如需切换类型请重新创建账户
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div>
+              <!-- AWS Access Key 字段（仅在 access_key 模式下显示）-->
+              <div v-if="form.credentialType === 'access_key'">
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                    >AWS 访问密钥 ID {{ isEdit ? '' : '*' }}</label
+                  >
+                  <input
+                    v-model="form.accessKeyId"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                    :class="{ 'border-red-500': errors.accessKeyId }"
+                    :placeholder="isEdit ? '留空则保持原有凭证不变' : '请输入 AWS Access Key ID'"
+                    :required="!isEdit"
+                    type="text"
+                  />
+                  <p v-if="errors.accessKeyId" class="mt-1 text-xs text-red-500">
+                    {{ errors.accessKeyId }}
+                  </p>
+                  <p v-if="isEdit" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    💡 编辑模式下，留空则保持原有 Access Key ID 不变
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                    >AWS 秘密访问密钥 {{ isEdit ? '' : '*' }}</label
+                  >
+                  <input
+                    v-model="form.secretAccessKey"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                    :class="{ 'border-red-500': errors.secretAccessKey }"
+                    :placeholder="
+                      isEdit ? '留空则保持原有凭证不变' : '请输入 AWS Secret Access Key'
+                    "
+                    :required="!isEdit"
+                    type="password"
+                  />
+                  <p v-if="errors.secretAccessKey" class="mt-1 text-xs text-red-500">
+                    {{ errors.secretAccessKey }}
+                  </p>
+                  <p v-if="isEdit" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    💡 编辑模式下，留空则保持原有 Secret Access Key 不变
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                    >会话令牌 (可选)</label
+                  >
+                  <input
+                    v-model="form.sessionToken"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                    :placeholder="
+                      isEdit
+                        ? '留空则保持原有 Session Token 不变'
+                        : '如果使用临时凭证，请输入会话令牌'
+                    "
+                    type="password"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    仅在使用临时 AWS 凭证时需要填写
+                  </p>
+                </div>
+              </div>
+
+              <!-- Bearer Token 字段（仅在 bearer_token 模式下显示）-->
+              <div v-if="form.credentialType === 'bearer_token'">
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-                  >AWS 秘密访问密钥 *</label
+                  >Bearer Token {{ isEdit ? '' : '*' }}</label
                 >
                 <input
-                  v-model="form.secretAccessKey"
+                  v-model="form.bearerToken"
                   class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
-                  :class="{ 'border-red-500': errors.secretAccessKey }"
-                  placeholder="请输入 AWS Secret Access Key"
-                  required
+                  :class="{ 'border-red-500': errors.bearerToken }"
+                  :placeholder="
+                    isEdit ? '留空则保持原有 Bearer Token 不变' : '请输入 AWS Bearer Token'
+                  "
+                  :required="!isEdit"
                   type="password"
                 />
-                <p v-if="errors.secretAccessKey" class="mt-1 text-xs text-red-500">
-                  {{ errors.secretAccessKey }}
+                <p v-if="errors.bearerToken" class="mt-1 text-xs text-red-500">
+                  {{ errors.bearerToken }}
                 </p>
+                <p v-if="isEdit" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  💡 编辑模式下，留空则保持原有 Bearer Token 不变
+                </p>
+                <div
+                  class="mt-2 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-700 dark:bg-green-900/30"
+                >
+                  <div class="flex items-start gap-2">
+                    <i class="fas fa-key mt-0.5 text-green-600 dark:text-green-400" />
+                    <div class="text-xs text-green-700 dark:text-green-300">
+                      <p class="mb-1 font-medium">Bearer Token 说明：</p>
+                      <ul class="list-inside list-disc space-y-1 text-xs">
+                        <li>输入 AWS Bedrock API Keys 生成的 Bearer Token</li>
+                        <li>Bearer Token 仅限 Bedrock 服务访问，权限范围更小</li>
+                        <li>相比 Access Key 更简单，无需 Secret Key</li>
+                        <li>
+                          参考：<a
+                            class="text-green-600 underline dark:text-green-400"
+                            href="https://aws.amazon.com/cn/blogs/machine-learning/accelerate-ai-development-with-amazon-bedrock-api-keys/"
+                            target="_blank"
+                            >AWS 官方文档</a
+                          >
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
               </div>
 
+              <!-- AWS 区域（两种凭证类型都需要）-->
               <div>
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                   >AWS 区域 *</label
@@ -872,10 +1055,12 @@
                 <p v-if="errors.region" class="mt-1 text-xs text-red-500">
                   {{ errors.region }}
                 </p>
-                <div class="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                <div
+                  class="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-700 dark:bg-blue-900/30"
+                >
                   <div class="flex items-start gap-2">
-                    <i class="fas fa-info-circle mt-0.5 text-blue-600" />
-                    <div class="text-xs text-blue-700">
+                    <i class="fas fa-info-circle mt-0.5 text-blue-600 dark:text-blue-400" />
+                    <div class="text-xs text-blue-700 dark:text-blue-300">
                       <p class="mb-1 font-medium">常用 AWS 区域参考：</p>
                       <div class="grid grid-cols-2 gap-1 text-xs">
                         <span>• us-east-1 (美国东部)</span>
@@ -885,25 +1070,12 @@
                         <span>• ap-northeast-1 (东京)</span>
                         <span>• eu-central-1 (法兰克福)</span>
                       </div>
-                      <p class="mt-2 text-blue-600">💡 请输入完整的区域代码，如 us-east-1</p>
+                      <p class="mt-2 text-blue-600 dark:text-blue-400">
+                        💡 请输入完整的区域代码，如 us-east-1
+                      </p>
                     </div>
                   </div>
                 </div>
-              </div>
-
-              <div>
-                <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
-                  >会话令牌 (可选)</label
-                >
-                <input
-                  v-model="form.sessionToken"
-                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
-                  placeholder="如果使用临时凭证，请输入会话令牌"
-                  type="password"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  仅在使用临时 AWS 凭证时需要填写
-                </p>
               </div>
 
               <div>
@@ -1317,6 +1489,13 @@
                   <!-- 快捷添加按钮 -->
                   <div class="mt-3 flex flex-wrap gap-2">
                     <button
+                      class="rounded-lg bg-violet-100 px-3 py-1 text-xs text-violet-700 transition-colors hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400 dark:hover:bg-violet-900/50"
+                      type="button"
+                      @click="addPresetMapping('claude-opus-4-6', 'claude-opus-4-6')"
+                    >
+                      + Opus 4.6
+                    </button>
+                    <button
                       class="rounded-lg bg-blue-100 px-3 py-1 text-xs text-blue-700 transition-colors hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/50"
                       type="button"
                       @click="
@@ -1435,7 +1614,7 @@
               </div>
 
               <!-- 上游错误处理 -->
-              <div v-if="form.platform === 'claude-console'">
+              <div v-if="autoProtectionPlatforms.includes(form.platform)">
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                   >上游错误处理</label
                 >
@@ -1535,24 +1714,26 @@
                   {{ errors.baseUrl }}
                 </p>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  填写 API 基础地址，必须以
-                  <code class="rounded bg-gray-100 px-1 dark:bg-gray-600">/models</code>
-                  结尾。系统会自动拼接
+                  支持三种格式，系统自动识别：
+                </p>
+                <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
+                  以 /models 结尾:
                   <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                    >/{model}:generateContent</code
+                    >https://proxy.com/v1beta/models</code
                   >
                 </p>
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-                  官方:
+                  模板模式:
                   <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                    >https://generativelanguage.googleapis.com/v1beta/models</code
+                    >https://proxy.com/api/{model}:{action}</code
                   >
                 </p>
                 <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-                  上游为 CRS:
+                  域名:
                   <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                    >https://your-crs.com/gemini/v1beta/models</code
+                    >https://generativelanguage.googleapis.com</code
                   >
+                  (自动拼接 /v1beta/models)
                 </p>
               </div>
 
@@ -1824,7 +2005,7 @@
                     Token，建议也一并填写以支持自动刷新。
                   </p>
                   <p
-                    v-else-if="form.platform === 'gemini'"
+                    v-else-if="form.platform === 'gemini' || form.platform === 'gemini-antigravity'"
                     class="mb-2 text-sm text-blue-800 dark:text-blue-300"
                   >
                     请输入有效的 Gemini Access Token。如果您有 Refresh
@@ -1861,7 +2042,9 @@
                       文件中的凭证， 请勿使用 Claude 官网 API Keys 页面的密钥。
                     </p>
                     <p
-                      v-else-if="form.platform === 'gemini'"
+                      v-else-if="
+                        form.platform === 'gemini' || form.platform === 'gemini-antigravity'
+                      "
                       class="text-xs text-blue-800 dark:text-blue-300"
                     >
                       请从已登录 Gemini CLI 的机器上获取
@@ -2591,7 +2774,7 @@
           </div>
 
           <!-- Gemini 项目 ID 字段 -->
-          <div v-if="form.platform === 'gemini'">
+          <div v-if="form.platform === 'gemini' || form.platform === 'gemini-antigravity'">
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
               >项目 ID (可选)</label
             >
@@ -3072,6 +3255,13 @@
                     + Sonnet 4.5
                   </button>
                   <button
+                    class="rounded-lg bg-violet-100 px-3 py-1 text-xs text-violet-700 transition-colors hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400 dark:hover:bg-violet-900/50"
+                    type="button"
+                    @click="addPresetMapping('claude-opus-4-6', 'claude-opus-4-6')"
+                  >
+                    + Opus 4.6
+                  </button>
+                  <button
                     class="rounded-lg bg-purple-100 px-3 py-1 text-xs text-purple-700 transition-colors hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50"
                     type="button"
                     @click="
@@ -3183,26 +3373,24 @@
                 <p class="mt-1 text-xs text-gray-500">账号被限流后暂停调度的时间（分钟）</p>
               </div>
             </div>
+          </div>
 
-            <!-- 上游错误处理（编辑模式）-->
-            <div v-if="form.platform === 'claude-console'">
-              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
-                上游错误处理
-              </label>
-              <label class="inline-flex cursor-pointer items-center">
-                <input
-                  v-model="form.disableAutoProtection"
-                  class="mr-2 rounded border-gray-300 text-blue-600 focus:border-blue-500 focus:ring focus:ring-blue-200 dark:border-gray-600 dark:bg-gray-700"
-                  type="checkbox"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">
-                  上游错误不自动暂停调度
-                </span>
-              </label>
-              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                勾选后遇到 401/400/429/529 等上游错误仅记录日志并透传，不自动禁用或限流
-              </p>
-            </div>
+          <!-- 上游错误处理（编辑模式）-->
+          <div v-if="autoProtectionPlatforms.includes(form.platform)">
+            <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+              上游错误处理
+            </label>
+            <label class="inline-flex cursor-pointer items-center">
+              <input
+                v-model="form.disableAutoProtection"
+                class="mr-2 rounded border-gray-300 text-blue-600 focus:border-blue-500 focus:ring focus:ring-blue-200 dark:border-gray-600 dark:bg-gray-700"
+                type="checkbox"
+              />
+              <span class="text-sm text-gray-700 dark:text-gray-300"> 上游错误不自动暂停调度 </span>
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              勾选后遇到 401/400/429/529 等上游错误仅记录日志并透传，不自动禁用或限流
+            </p>
           </div>
 
           <!-- OpenAI-Responses 特定字段（编辑模式）-->
@@ -3317,24 +3505,26 @@
                 {{ errors.baseUrl }}
               </p>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                填写 API 基础地址，必须以
-                <code class="rounded bg-gray-100 px-1 dark:bg-gray-600">/models</code>
-                结尾。系统会自动拼接
+                支持三种格式，系统自动识别：
+              </p>
+              <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
+                以 /models 结尾:
                 <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                  >/{model}:generateContent</code
+                  >https://proxy.com/v1beta/models</code
                 >
               </p>
               <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-                官方:
+                模板模式:
                 <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                  >https://generativelanguage.googleapis.com/v1beta/models</code
+                  >https://proxy.com/api/{model}:{action}</code
                 >
               </p>
               <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-                上游为 CRS:
+                域名:
                 <code class="rounded bg-gray-100 px-1 dark:bg-gray-600"
-                  >https://your-crs.com/gemini/v1beta/models</code
+                  >https://generativelanguage.googleapis.com</code
                 >
+                (自动拼接 /v1beta/models)
               </p>
             </div>
 
@@ -3804,10 +3994,10 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { showToast } from '@/utils/toast'
-import { apiClient } from '@/config/api'
+import { showToast } from '@/utils/tools'
+
+import * as httpApis from '@/utils/http_apis'
 import { useAccountsStore } from '@/stores/accounts'
-import { useConfirm } from '@/composables/useConfirm'
 import ProxyConfig from './ProxyConfig.vue'
 import OAuthFlow from './OAuthFlow.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
@@ -3824,11 +4014,46 @@ const props = defineProps({
 const emit = defineEmits(['close', 'success', 'platform-changed'])
 
 const accountsStore = useAccountsStore()
-const { showConfirmModal, confirmOptions, showConfirm, handleConfirm, handleCancel } = useConfirm()
+
+// 确认弹窗状态
+const showConfirmModal = ref(false)
+const confirmOptions = ref({ title: '', message: '', confirmText: '继续', cancelText: '取消' })
+let confirmResolve = null
+const showConfirm = (title, message, confirmText = '继续', cancelText = '取消') => {
+  return new Promise((resolve) => {
+    confirmOptions.value = { title, message, confirmText, cancelText }
+    confirmResolve = resolve
+    showConfirmModal.value = true
+  })
+}
+const handleConfirm = () => {
+  showConfirmModal.value = false
+  confirmResolve?.(true)
+  confirmResolve = null
+}
+const handleCancel = () => {
+  showConfirmModal.value = false
+  confirmResolve?.(false)
+  confirmResolve = null
+}
 
 // 是否为编辑模式
 const isEdit = computed(() => !!props.account)
 const show = ref(true)
+
+// 支持 disableAutoProtection 的平台白名单
+const autoProtectionPlatforms = [
+  'claude-console',
+  'ccr',
+  'droid',
+  'bedrock',
+  'azure-openai',
+  'azure_openai',
+  'gemini',
+  'gemini-api',
+  'openai',
+  'openai-responses'
+]
 
 // OAuthFlow 组件引用
 const oauthFlowRef = ref(null)
@@ -3880,7 +4105,7 @@ const determinePlatformGroup = (platform) => {
     return 'claude'
   } else if (['openai', 'openai-responses', 'azure_openai'].includes(platform)) {
     return 'openai'
-  } else if (['gemini', 'gemini-api'].includes(platform)) {
+  } else if (['gemini', 'gemini-antigravity', 'gemini-api'].includes(platform)) {
     return 'gemini'
   } else if (platform === 'droid') {
     return 'droid'
@@ -4015,7 +4240,8 @@ const form = ref({
   platform: props.account?.platform || 'claude',
   addType: (() => {
     const platform = props.account?.platform || 'claude'
-    if (platform === 'gemini' || platform === 'openai') return 'oauth'
+    if (platform === 'gemini' || platform === 'gemini-antigravity' || platform === 'openai')
+      return 'oauth'
     if (platform === 'claude') return 'oauth'
     return 'manual'
   })(),
@@ -4064,7 +4290,9 @@ const form = ref({
   })(),
   userAgent: props.account?.userAgent || '',
   enableRateLimit: props.account ? props.account.rateLimitDuration > 0 : true,
-  disableAutoProtection: props.account?.disableAutoProtection === true,
+  disableAutoProtection:
+    props.account?.disableAutoProtection === true ||
+    props.account?.disableAutoProtection === 'true',
   // 额度管理字段
   dailyQuota: props.account?.dailyQuota || 0,
   dailyUsage: props.account?.dailyUsage || 0,
@@ -4072,10 +4300,12 @@ const form = ref({
   // 并发控制字段
   maxConcurrentTasks: props.account?.maxConcurrentTasks || 0,
   // Bedrock 特定字段
+  credentialType: props.account?.credentialType || 'access_key', // 'access_key' 或 'bearer_token'
   accessKeyId: props.account?.accessKeyId || '',
   secretAccessKey: props.account?.secretAccessKey || '',
   region: props.account?.region || '',
   sessionToken: props.account?.sessionToken || '',
+  bearerToken: props.account?.bearerToken || '', // Bearer Token 字段
   defaultModel: props.account?.defaultModel || '',
   smallFastModel: props.account?.smallFastModel || '',
   // Azure OpenAI 特定字段
@@ -4110,20 +4340,20 @@ const allowedModels = ref([
   'claude-3-5-haiku-20241022'
 ]) // 白名单模式下选中的模型列表
 
-// 常用模型列表
-const commonModels = [
-  { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', color: 'blue' },
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', color: 'blue' },
-  { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', color: 'indigo' },
-  { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku', color: 'green' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', color: 'emerald' },
-  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4', color: 'purple' },
-  { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', color: 'purple' },
-  { value: 'deepseek-chat', label: 'DeepSeek Chat', color: 'cyan' },
-  { value: 'Qwen', label: 'Qwen', color: 'orange' },
-  { value: 'Kimi', label: 'Kimi', color: 'pink' },
-  { value: 'GLM', label: 'GLM', color: 'teal' }
-]
+// 常用模型列表（从 API 获取）
+const commonModels = ref([])
+
+// 加载模型列表
+const loadCommonModels = async () => {
+  try {
+    const result = await httpApis.getModelsApi()
+    if (result.success && result.data?.all) {
+      commonModels.value = result.data.all
+    }
+  } catch (error) {
+    console.error('Failed to load models:', error)
+  }
+}
 
 // 模型映射表数据
 const modelMappings = ref([])
@@ -4238,6 +4468,7 @@ const errors = ref({
   accessKeyId: '',
   secretAccessKey: '',
   region: '',
+  bearerToken: '',
   azureEndpoint: '',
   deploymentName: ''
 })
@@ -4330,7 +4561,7 @@ const loadAccountUsage = async () => {
   if (!isEdit.value || !props.account?.id) return
 
   try {
-    const response = await apiClient.get(`/admin/claude-console-accounts/${props.account.id}/usage`)
+    const response = await httpApis.getClaudeConsoleAccountUsageApi(props.account.id)
     if (response) {
       // 更新表单中的使用量数据
       form.value.dailyUsage = response.dailyUsage || 0
@@ -4357,7 +4588,7 @@ const selectPlatformGroup = (group) => {
   } else if (group === 'openai') {
     form.value.platform = 'openai'
   } else if (group === 'gemini') {
-    form.value.platform = 'gemini'
+    form.value.platform = 'gemini' // Default to Gemini CLI, user can select Antigravity
   } else if (group === 'droid') {
     form.value.platform = 'droid'
   }
@@ -4394,7 +4625,11 @@ const nextStep = async () => {
   }
 
   // 对于Gemini账户，检查项目 ID
-  if (form.value.platform === 'gemini' && oauthStep.value === 1 && form.value.addType === 'oauth') {
+  if (
+    (form.value.platform === 'gemini' || form.value.platform === 'gemini-antigravity') &&
+    oauthStep.value === 1 &&
+    form.value.addType === 'oauth'
+  ) {
     if (!form.value.projectId || form.value.projectId.trim() === '') {
       // 使用自定义确认弹窗
       const confirmed = await showConfirm(
@@ -4767,9 +5002,14 @@ const handleOAuthSuccess = async (tokenInfoOrList) => {
         hasClaudePro: form.value.subscriptionType === 'claude_pro',
         manuallySet: true // 标记为手动设置
       }
-    } else if (currentPlatform === 'gemini') {
-      // Gemini使用geminiOauth字段
+    } else if (currentPlatform === 'gemini' || currentPlatform === 'gemini-antigravity') {
+      // Gemini/Antigravity使用geminiOauth字段
       data.geminiOauth = tokenInfo.tokens || tokenInfo
+      // 根据 platform 设置 oauthProvider
+      data.oauthProvider =
+        currentPlatform === 'gemini-antigravity'
+          ? 'antigravity'
+          : tokenInfo.oauthProvider || 'gemini-cli'
       if (form.value.projectId) {
         data.projectId = form.value.projectId
       }
@@ -4941,14 +5181,27 @@ const createAccount = async () => {
       hasError = true
     }
   } else if (form.value.platform === 'bedrock') {
-    // Bedrock 验证
-    if (!form.value.accessKeyId || form.value.accessKeyId.trim() === '') {
-      errors.value.accessKeyId = '请填写 AWS 访问密钥 ID'
-      hasError = true
-    }
-    if (!form.value.secretAccessKey || form.value.secretAccessKey.trim() === '') {
-      errors.value.secretAccessKey = '请填写 AWS 秘密访问密钥'
-      hasError = true
+    // Bedrock 验证 - 根据凭证类型进行不同验证
+    if (form.value.credentialType === 'access_key') {
+      // Access Key 模式：创建时必填，编辑时可选（留空则保持原有凭证）
+      if (!isEdit.value) {
+        if (!form.value.accessKeyId || form.value.accessKeyId.trim() === '') {
+          errors.value.accessKeyId = '请填写 AWS 访问密钥 ID'
+          hasError = true
+        }
+        if (!form.value.secretAccessKey || form.value.secretAccessKey.trim() === '') {
+          errors.value.secretAccessKey = '请填写 AWS 秘密访问密钥'
+          hasError = true
+        }
+      }
+    } else if (form.value.credentialType === 'bearer_token') {
+      // Bearer Token 模式：创建时必填，编辑时可选（留空则保持原有凭证）
+      if (!isEdit.value) {
+        if (!form.value.bearerToken || form.value.bearerToken.trim() === '') {
+          errors.value.bearerToken = '请填写 Bearer Token'
+          hasError = true
+        }
+      }
     }
     if (!form.value.region || form.value.region.trim() === '') {
       errors.value.region = '请选择 AWS 区域'
@@ -5007,12 +5260,8 @@ const createAccount = async () => {
         errors.value.apiKey = '请填写 API Key'
         hasError = true
       }
-      // 验证 baseUrl 必须以 /models 结尾
       if (!form.value.baseUrl || form.value.baseUrl.trim() === '') {
         errors.value.baseUrl = '请填写 API 基础地址'
-        hasError = true
-      } else if (!form.value.baseUrl.trim().endsWith('/models')) {
-        errors.value.baseUrl = 'API 基础地址必须以 /models 结尾'
         hasError = true
       }
     } else {
@@ -5172,9 +5421,7 @@ const createAccount = async () => {
       data.userAgent = form.value.userAgent || null
       // 如果不启用限流，传递 0 表示不限流
       data.rateLimitDuration = form.value.enableRateLimit ? form.value.rateLimitDuration || 60 : 0
-      // 上游错误处理（仅 Claude Console）
       if (form.value.platform === 'claude-console') {
-        data.disableAutoProtection = !!form.value.disableAutoProtection
         data.interceptWarmup = !!form.value.interceptWarmup
       }
       // 额度管理字段
@@ -5191,6 +5438,10 @@ const createAccount = async () => {
       data.rateLimitDuration = 60 // 默认值60，不从用户输入获取
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+    } else if (form.value.platform === 'gemini-antigravity') {
+      // Antigravity OAuth - set oauthProvider, submission happens below
+      data.oauthProvider = 'antigravity'
+      data.priority = form.value.priority || 50
     } else if (form.value.platform === 'gemini-api') {
       // Gemini API 账户特定数据
       data.baseUrl = form.value.baseUrl || 'https://generativelanguage.googleapis.com'
@@ -5200,12 +5451,21 @@ const createAccount = async () => {
         ? form.value.supportedModels
         : []
     } else if (form.value.platform === 'bedrock') {
-      // Bedrock 账户特定数据 - 构造 awsCredentials 对象
-      data.awsCredentials = {
-        accessKeyId: form.value.accessKeyId,
-        secretAccessKey: form.value.secretAccessKey,
-        sessionToken: form.value.sessionToken || null
+      // Bedrock 账户特定数据
+      data.credentialType = form.value.credentialType || 'access_key'
+
+      // 根据凭证类型构造不同的凭证对象
+      if (form.value.credentialType === 'access_key') {
+        data.awsCredentials = {
+          accessKeyId: form.value.accessKeyId,
+          secretAccessKey: form.value.secretAccessKey,
+          sessionToken: form.value.sessionToken || null
+        }
+      } else if (form.value.credentialType === 'bearer_token') {
+        // Bearer Token 模式：必须传递 Bearer Token
+        data.bearerToken = form.value.bearerToken
       }
+
       data.region = form.value.region
       data.defaultModel = form.value.defaultModel || null
       data.smallFastModel = form.value.smallFastModel || null
@@ -5226,6 +5486,11 @@ const createAccount = async () => {
       data.schedulable = form.value.schedulable !== false
     }
 
+    // 支持 disableAutoProtection 的平台才写入
+    if (autoProtectionPlatforms.includes(form.value.platform)) {
+      data.disableAutoProtection = !!form.value.disableAutoProtection
+    }
+
     let result
     if (form.value.platform === 'claude') {
       result = await accountsStore.createClaudeAccount(data)
@@ -5242,7 +5507,7 @@ const createAccount = async () => {
       result = await accountsStore.createOpenAIAccount(data)
     } else if (form.value.platform === 'azure_openai') {
       result = await accountsStore.createAzureOpenAIAccount(data)
-    } else if (form.value.platform === 'gemini') {
+    } else if (form.value.platform === 'gemini' || form.value.platform === 'gemini-antigravity') {
       result = await accountsStore.createGeminiAccount(data)
     } else if (form.value.platform === 'gemini-api') {
       result = await accountsStore.createGeminiApiAccount(data)
@@ -5292,15 +5557,11 @@ const updateAccount = async () => {
     return
   }
 
-  // Gemini API 的 baseUrl 验证（必须以 /models 结尾）
+  // Gemini API 的 baseUrl 验证
   if (form.value.platform === 'gemini-api') {
     const baseUrl = form.value.baseUrl?.trim() || ''
     if (!baseUrl) {
       errors.value.baseUrl = '请填写 API 基础地址'
-      return
-    }
-    if (!baseUrl.endsWith('/models')) {
-      errors.value.baseUrl = 'API 基础地址必须以 /models 结尾'
       return
     }
   }
@@ -5507,8 +5768,6 @@ const updateAccount = async () => {
       data.userAgent = form.value.userAgent || null
       // 如果不启用限流，传递 0 表示不限流
       data.rateLimitDuration = form.value.enableRateLimit ? form.value.rateLimitDuration || 60 : 0
-      // 上游错误处理
-      data.disableAutoProtection = !!form.value.disableAutoProtection
       // 拦截预热请求
       data.interceptWarmup = !!form.value.interceptWarmup
       // 额度管理字段
@@ -5533,19 +5792,33 @@ const updateAccount = async () => {
 
     // Bedrock 特定更新
     if (props.account.platform === 'bedrock') {
-      // 只有当有凭证变更时才构造 awsCredentials 对象
-      if (form.value.accessKeyId || form.value.secretAccessKey || form.value.sessionToken) {
-        data.awsCredentials = {}
-        if (form.value.accessKeyId) {
-          data.awsCredentials.accessKeyId = form.value.accessKeyId
+      // 更新凭证类型
+      if (form.value.credentialType) {
+        data.credentialType = form.value.credentialType
+      }
+
+      // 根据凭证类型更新凭证
+      if (form.value.credentialType === 'access_key') {
+        // 只有当有凭证变更时才构造 awsCredentials 对象
+        if (form.value.accessKeyId || form.value.secretAccessKey || form.value.sessionToken) {
+          data.awsCredentials = {}
+          if (form.value.accessKeyId) {
+            data.awsCredentials.accessKeyId = form.value.accessKeyId
+          }
+          if (form.value.secretAccessKey) {
+            data.awsCredentials.secretAccessKey = form.value.secretAccessKey
+          }
+          if (form.value.sessionToken !== undefined) {
+            data.awsCredentials.sessionToken = form.value.sessionToken || null
+          }
         }
-        if (form.value.secretAccessKey) {
-          data.awsCredentials.secretAccessKey = form.value.secretAccessKey
-        }
-        if (form.value.sessionToken !== undefined) {
-          data.awsCredentials.sessionToken = form.value.sessionToken || null
+      } else if (form.value.credentialType === 'bearer_token') {
+        // Bearer Token 模式：更新 Bearer Token（编辑时可选，留空则保留原有凭证）
+        if (form.value.bearerToken && form.value.bearerToken.trim()) {
+          data.bearerToken = form.value.bearerToken
         }
       }
+
       if (form.value.region) {
         data.region = form.value.region
       }
@@ -5583,6 +5856,11 @@ const updateAccount = async () => {
       data.supportedModels = Array.isArray(form.value.supportedModels)
         ? form.value.supportedModels
         : []
+    }
+
+    // 支持 disableAutoProtection 的平台才写入
+    if (autoProtectionPlatforms.includes(props.account.platform)) {
+      data.disableAutoProtection = !!form.value.disableAutoProtection
     }
 
     if (props.account.platform === 'claude') {
@@ -5733,7 +6011,7 @@ const filteredGroups = computed(() => {
 const loadGroups = async () => {
   loadingGroups.value = true
   try {
-    const response = await apiClient.get('/admin/account-groups')
+    const response = await httpApis.getAccountGroupsApi()
     groups.value = response.data || []
   } catch (error) {
     showToast('加载分组列表失败', 'error')
@@ -6137,7 +6415,8 @@ watch(
         // 并发控制字段
         maxConcurrentTasks: newAccount.maxConcurrentTasks || 0,
         // 上游错误处理
-        disableAutoProtection: newAccount.disableAutoProtection === true
+        disableAutoProtection:
+          newAccount.disableAutoProtection === true || newAccount.disableAutoProtection === 'true'
       }
 
       // 如果是Claude Console账户，加载实时使用情况
@@ -6186,7 +6465,7 @@ watch(
             // 否则查找账户所属的分组
             const checkPromises = groups.value.map(async (group) => {
               try {
-                const response = await apiClient.get(`/admin/account-groups/${group.id}/members`)
+                const response = await httpApis.getAccountGroupMembersApi(group.id)
                 const members = response.data || []
                 if (members.some((m) => m.id === newAccount.id)) {
                   foundGroupIds.push(group.id)
@@ -6214,7 +6493,7 @@ watch(
 // 获取统一 User-Agent 信息
 const fetchUnifiedUserAgent = async () => {
   try {
-    const response = await apiClient.get('/admin/claude-code-version')
+    const response = await httpApis.getClaudeCodeVersionApi()
     if (response.success && response.userAgent) {
       unifiedUserAgent.value = response.userAgent
     } else {
@@ -6230,7 +6509,7 @@ const fetchUnifiedUserAgent = async () => {
 const clearUnifiedCache = async () => {
   clearingCache.value = true
   try {
-    const response = await apiClient.post('/admin/claude-code-version/clear')
+    const response = await httpApis.clearClaudeCodeVersionApi()
     if (response.success) {
       unifiedUserAgent.value = ''
       showToast('统一User-Agent缓存已清除', 'success')
@@ -6335,6 +6614,9 @@ onMounted(() => {
   if (isEdit.value) {
     initModelMappings()
   }
+
+  // 加载模型列表
+  loadCommonModels()
 
   // 获取Claude Code统一User-Agent信息
   fetchUnifiedUserAgent()

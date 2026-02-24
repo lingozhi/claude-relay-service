@@ -141,6 +141,28 @@
               </el-tooltip>
             </div>
 
+            <!-- 刷新余额按钮 -->
+            <div class="relative">
+              <el-tooltip :content="refreshBalanceTooltip" effect="dark" placement="bottom">
+                <button
+                  class="group relative flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all duration-200 hover:border-gray-300 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-500 sm:w-auto"
+                  :disabled="accountsLoading || refreshingBalances || !canRefreshVisibleBalances"
+                  @click="refreshVisibleBalances"
+                >
+                  <div
+                    class="absolute -inset-0.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 opacity-0 blur transition duration-300 group-hover:opacity-20"
+                  ></div>
+                  <i
+                    :class="[
+                      'fas relative text-blue-500',
+                      refreshingBalances ? 'fa-spinner fa-spin' : 'fa-wallet'
+                    ]"
+                  />
+                  <span class="relative">刷新余额</span>
+                </button>
+              </el-tooltip>
+            </div>
+
             <!-- 选择/取消选择按钮 -->
             <button
               class="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all duration-200 hover:border-gray-300 hover:bg-gray-50 hover:shadow-md dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -149,6 +171,22 @@
               <i :class="showCheckboxes ? 'fas fa-times' : 'fas fa-check-square'"></i>
               <span>{{ showCheckboxes ? '取消选择' : '选择' }}</span>
             </button>
+
+            <!-- 分组管理按钮 -->
+            <div class="relative">
+              <el-tooltip content="管理账户分组" effect="dark" placement="bottom">
+                <button
+                  class="group relative flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-all duration-200 hover:border-gray-300 hover:shadow-md dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-500 sm:w-auto"
+                  @click="showGroupManagementModal = true"
+                >
+                  <div
+                    class="absolute -inset-0.5 rounded-lg bg-gradient-to-r from-purple-500 to-pink-500 opacity-0 blur transition duration-300 group-hover:opacity-20"
+                  ></div>
+                  <i class="fas fa-layer-group relative text-purple-500" />
+                  <span class="relative">分组</span>
+                </button>
+              </el-tooltip>
+            </div>
 
             <!-- 批量删除按钮 -->
             <button
@@ -262,6 +300,11 @@
                   class="min-w-[150px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
                 >
                   今日使用
+                </th>
+                <th
+                  class="min-w-[220px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
+                >
+                  余额/配额
                 </th>
                 <th
                   class="min-w-[210px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
@@ -460,8 +503,9 @@
                     <div class="min-w-0">
                       <div class="flex items-center gap-2">
                         <div
-                          class="truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
-                          :title="account.name"
+                          class="cursor-pointer truncate text-sm font-semibold text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-400"
+                          title="点击复制"
+                          @click.stop="copyText(account.name)"
                         >
                           {{ account.name }}
                         </div>
@@ -707,6 +751,23 @@
                       >
                     </span>
                     <span
+                      v-if="account.tempUnavailable"
+                      class="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+                    >
+                      <i class="fas fa-clock mr-1" />
+                      临时暂停
+                      <span v-if="account.tempUnavailable.ttl > 0"
+                        >({{ formatTempUnavailableTime(account.tempUnavailable.ttl) }})</span
+                      >
+                      <el-tooltip
+                        :content="`${account.tempUnavailable.errorType} (HTTP ${account.tempUnavailable.statusCode})`"
+                        effect="dark"
+                        placement="top"
+                      >
+                        <i class="fas fa-info-circle ml-1 cursor-help" />
+                      </el-tooltip>
+                    </span>
+                    <span
                       v-if="account.schedulable === false"
                       class="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700"
                     >
@@ -746,9 +807,9 @@
                     </div>
                     <div class="flex items-center gap-2">
                       <div class="h-2 w-2 rounded-full bg-purple-500" />
-                      <span class="text-xs text-gray-600 dark:text-gray-300"
-                        >{{ formatNumber(account.usage.daily.allTokens || 0) }}M</span
-                      >
+                      <span class="text-xs text-gray-600 dark:text-gray-300">{{
+                        formatNumber(account.usage.daily.allTokens || 0)
+                      }}</span>
                     </div>
                     <div class="flex items-center gap-2">
                       <div class="h-2 w-2 rounded-full bg-green-500" />
@@ -764,6 +825,31 @@
                     </div>
                   </div>
                   <div v-else class="text-xs text-gray-400">暂无数据</div>
+                </td>
+                <td class="whitespace-nowrap px-3 py-4">
+                  <BalanceDisplay
+                    :account-id="account.id"
+                    :initial-balance="account.balanceInfo"
+                    :platform="account.platform"
+                    :query-mode="
+                      account.platform === 'gemini' && account.oauthProvider === 'antigravity'
+                        ? 'auto'
+                        : 'local'
+                    "
+                    @error="(error) => handleBalanceError(account.id, error)"
+                    @refreshed="(data) => handleBalanceRefreshed(account.id, data)"
+                  />
+                  <div class="mt-1 text-xs">
+                    <button
+                      v-if="
+                        !(account.platform === 'gemini' && account.oauthProvider === 'antigravity')
+                      "
+                      class="text-blue-500 hover:underline dark:text-blue-300"
+                      @click="openBalanceScriptModal(account)"
+                    >
+                      配置余额脚本
+                    </button>
+                  </div>
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
                   <div v-if="account.platform === 'claude'" class="space-y-2">
@@ -886,7 +972,7 @@
                         <div class="flex items-center gap-1">
                           <div class="h-1.5 w-1.5 rounded-full bg-purple-500" />
                           <span class="font-medium text-gray-900 dark:text-gray-100">
-                            {{ formatNumber(account.usage.sessionWindow.totalTokens) }}M
+                            {{ formatNumber(account.usage.sessionWindow.totalTokens) }}
                           </span>
                         </div>
                         <div class="flex items-center gap-1">
@@ -1355,7 +1441,11 @@
                 />
               </div>
               <div>
-                <h4 class="text-sm font-semibold text-gray-900">
+                <h4
+                  class="cursor-pointer text-sm font-semibold text-gray-900 hover:text-blue-600 dark:hover:text-blue-400"
+                  title="点击复制"
+                  @click.stop="copyText(account.name || account.email)"
+                >
                   {{ account.name || account.email }}
                 </h4>
                 <div class="mt-0.5 flex items-center gap-2">
@@ -1394,7 +1484,7 @@
                 <div class="flex items-center gap-1.5">
                   <div class="h-1.5 w-1.5 rounded-full bg-purple-500" />
                   <p class="text-xs text-gray-600 dark:text-gray-400">
-                    {{ formatNumber(account.usage?.daily?.allTokens || 0) }}M
+                    {{ formatNumber(account.usage?.daily?.allTokens || 0) }}
                   </p>
                 </div>
                 <div class="flex items-center gap-1.5">
@@ -1411,7 +1501,7 @@
                 <div class="flex items-center gap-1.5">
                   <div class="h-1.5 w-1.5 rounded-full bg-purple-500" />
                   <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    {{ formatNumber(account.usage.sessionWindow.totalTokens) }}M
+                    {{ formatNumber(account.usage.sessionWindow.totalTokens) }}
                   </p>
                 </div>
                 <div class="flex items-center gap-1.5">
@@ -1422,6 +1512,32 @@
                 </div>
               </div>
               <div v-else class="text-sm font-semibold text-gray-400">-</div>
+            </div>
+          </div>
+
+          <!-- 余额/配额 -->
+          <div class="mb-3">
+            <p class="mb-1 text-xs text-gray-500 dark:text-gray-400">余额/配额</p>
+            <BalanceDisplay
+              :account-id="account.id"
+              :initial-balance="account.balanceInfo"
+              :platform="account.platform"
+              :query-mode="
+                account.platform === 'gemini' && account.oauthProvider === 'antigravity'
+                  ? 'auto'
+                  : 'local'
+              "
+              @error="(error) => handleBalanceError(account.id, error)"
+              @refreshed="(data) => handleBalanceRefreshed(account.id, data)"
+            />
+            <div class="mt-1 text-xs">
+              <button
+                v-if="!(account.platform === 'gemini' && account.oauthProvider === 'antigravity')"
+                class="text-blue-500 hover:underline dark:text-blue-300"
+                @click="openBalanceScriptModal(account)"
+              >
+                配置余额脚本
+              </button>
             </div>
           </div>
 
@@ -1892,8 +2008,9 @@
     />
 
     <!-- 账户测试弹窗 -->
-    <AccountTestModal
+    <UnifiedTestModal
       :account="testingAccount"
+      mode="account"
       :show="showAccountTestModal"
       @close="closeAccountTestModal"
     />
@@ -1904,6 +2021,13 @@
       :show="showScheduledTestModal"
       @close="closeScheduledTestModal"
       @saved="handleScheduledTestSaved"
+    />
+
+    <AccountBalanceScriptModal
+      :account="selectedAccountForScript"
+      :show="showBalanceScriptModal"
+      @close="closeBalanceScriptModal"
+      @saved="handleBalanceScriptSaved"
     />
 
     <!-- 账户统计弹窗 -->
@@ -2045,30 +2169,60 @@
         </p>
       </div>
     </el-dialog>
+
+    <!-- 分组管理弹窗 -->
+    <GroupManagementModal
+      v-if="showGroupManagementModal"
+      @close="showGroupManagementModal = false"
+      @refresh="loadAccountGroups"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { showToast } from '@/utils/toast'
-import { apiClient } from '@/config/api'
-import { useConfirm } from '@/composables/useConfirm'
+import { showToast, copyText, formatNumber, formatRelativeTime } from '@/utils/tools'
+
+import * as httpApis from '@/utils/http_apis'
 import AccountForm from '@/components/accounts/AccountForm.vue'
 import CcrAccountForm from '@/components/accounts/CcrAccountForm.vue'
 import AccountUsageDetailModal from '@/components/accounts/AccountUsageDetailModal.vue'
 import AccountExpiryEditModal from '@/components/accounts/AccountExpiryEditModal.vue'
-import AccountTestModal from '@/components/accounts/AccountTestModal.vue'
+import UnifiedTestModal from '@/components/common/UnifiedTestModal.vue'
 import AccountScheduledTestModal from '@/components/accounts/AccountScheduledTestModal.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import ActionDropdown from '@/components/common/ActionDropdown.vue'
+import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue'
+import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
+import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
 
-// 使用确认弹窗
-const { showConfirmModal, confirmOptions, showConfirm, handleConfirm, handleCancel } = useConfirm()
+// 确认弹窗状态
+const showConfirmModal = ref(false)
+const confirmOptions = ref({ title: '', message: '', confirmText: '继续', cancelText: '取消' })
+let confirmResolve = null
+const showConfirm = (title, message, confirmText = '继续', cancelText = '取消') => {
+  return new Promise((resolve) => {
+    confirmOptions.value = { title, message, confirmText, cancelText }
+    confirmResolve = resolve
+    showConfirmModal.value = true
+  })
+}
+const handleConfirm = () => {
+  showConfirmModal.value = false
+  confirmResolve?.(true)
+  confirmResolve = null
+}
+const handleCancel = () => {
+  showConfirmModal.value = false
+  confirmResolve?.(false)
+  confirmResolve = null
+}
 
 // 数据状态
 const accounts = ref([])
 const accountsLoading = ref(false)
+const refreshingBalances = ref(false)
 const accountsSortBy = ref('name')
 const accountsSortOrder = ref('asc')
 const apiKeys = ref([]) // 保留用于其他功能（如删除账户时显示绑定信息）
@@ -2115,7 +2269,8 @@ const supportedUsagePlatforms = [
   'openai-responses',
   'gemini',
   'droid',
-  'gemini-api'
+  'gemini-api',
+  'bedrock'
 ]
 
 // 过期时间编辑弹窗状态
@@ -2132,6 +2287,9 @@ const scheduledTestAccount = ref(null)
 
 // 账户统计弹窗状态
 const showAccountStatsModal = ref(false)
+
+// 分组管理弹窗状态
+const showGroupManagementModal = ref(false)
 
 // 表格横向滚动检测
 const tableContainerRef = ref(null)
@@ -2204,16 +2362,16 @@ const platformGroupMap = {
 
 // 平台请求处理器
 const platformRequestHandlers = {
-  claude: (params) => apiClient.get('/admin/claude-accounts', { params }),
-  'claude-console': (params) => apiClient.get('/admin/claude-console-accounts', { params }),
-  bedrock: (params) => apiClient.get('/admin/bedrock-accounts', { params }),
-  gemini: (params) => apiClient.get('/admin/gemini-accounts', { params }),
-  openai: (params) => apiClient.get('/admin/openai-accounts', { params }),
-  azure_openai: (params) => apiClient.get('/admin/azure-openai-accounts', { params }),
-  'openai-responses': (params) => apiClient.get('/admin/openai-responses-accounts', { params }),
-  ccr: (params) => apiClient.get('/admin/ccr-accounts', { params }),
-  droid: (params) => apiClient.get('/admin/droid-accounts', { params }),
-  'gemini-api': (params) => apiClient.get('/admin/gemini-api-accounts', { params })
+  claude: () => httpApis.getClaudeAccountsApi(),
+  'claude-console': () => httpApis.getClaudeConsoleAccountsApi(),
+  bedrock: () => httpApis.getBedrockAccountsApi(),
+  gemini: () => httpApis.getGeminiAccountsApi(),
+  openai: () => httpApis.getOpenAIAccountsApi(),
+  azure_openai: () => httpApis.getAzureOpenAIAccountsApi(),
+  'openai-responses': () => httpApis.getOpenAIResponsesAccountsApi(),
+  ccr: () => httpApis.getCcrAccountsApi(),
+  droid: () => httpApis.getDroidAccountsApi(),
+  'gemini-api': () => httpApis.getGeminiApiAccountsApi()
 }
 
 const allPlatformKeys = Object.keys(platformRequestHandlers)
@@ -2349,7 +2507,10 @@ const showResetButton = (account) => {
     'openai-responses',
     'gemini',
     'gemini-api',
-    'ccr'
+    'ccr',
+    'droid',
+    'bedrock',
+    'azure-openai'
   ]
   return (
     supportedPlatforms.includes(account.platform) &&
@@ -2357,6 +2518,7 @@ const showResetButton = (account) => {
       account.status !== 'active' ||
       account.rateLimitStatus?.isRateLimited ||
       account.rateLimitStatus === 'limited' ||
+      account.tempUnavailable ||
       !account.isActive)
   )
 }
@@ -2431,25 +2593,17 @@ const openAccountUsageModal = async (account) => {
   accountUsageOverview.value = {}
   accountUsageGeneratedAt.value = ''
 
-  try {
-    const response = await apiClient.get(
-      `/admin/accounts/${account.id}/usage-history?platform=${account.platform}&days=30`
-    )
-
-    if (response.success) {
-      const data = response.data || {}
-      accountUsageHistory.value = data.history || []
-      accountUsageSummary.value = data.summary || {}
-      accountUsageOverview.value = data.overview || {}
-      accountUsageGeneratedAt.value = data.generatedAt || ''
-    } else {
-      showToast(response.error || '加载账号使用详情失败', 'error')
-    }
-  } catch (error) {
-    showToast('加载账号使用详情失败', 'error')
-  } finally {
-    accountUsageLoading.value = false
+  const response = await httpApis.getAccountUsageHistoryApi(account.id, account.platform, 30)
+  if (response.success) {
+    const data = response.data || {}
+    accountUsageHistory.value = data.history || []
+    accountUsageSummary.value = data.summary || {}
+    accountUsageOverview.value = data.overview || {}
+    accountUsageGeneratedAt.value = data.generatedAt || ''
+  } else {
+    showToast(response.error || '加载账号使用详情失败', 'error')
   }
+  accountUsageLoading.value = false
 }
 
 const closeAccountUsageModal = () => {
@@ -2459,7 +2613,17 @@ const closeAccountUsageModal = () => {
 }
 
 // 测试账户连通性相关函数
-const supportedTestPlatforms = ['claude', 'claude-console']
+const supportedTestPlatforms = [
+  'claude',
+  'claude-console',
+  'bedrock',
+  'gemini',
+  'gemini-api',
+  'openai-responses',
+  'azure-openai',
+  'droid',
+  'ccr'
+]
 
 const canTestAccount = (account) => {
   return !!account && supportedTestPlatforms.includes(account.platform)
@@ -2496,6 +2660,43 @@ const closeScheduledTestModal = () => {
 
 const handleScheduledTestSaved = () => {
   showToast('定时测试配置已保存', 'success')
+}
+
+// 余额脚本配置
+const showBalanceScriptModal = ref(false)
+const selectedAccountForScript = ref(null)
+
+const openBalanceScriptModal = (account) => {
+  selectedAccountForScript.value = account
+  showBalanceScriptModal.value = true
+}
+
+const closeBalanceScriptModal = () => {
+  showBalanceScriptModal.value = false
+  selectedAccountForScript.value = null
+}
+
+const handleBalanceScriptSaved = async () => {
+  showToast('余额脚本已保存', 'success')
+  const account = selectedAccountForScript.value
+  closeBalanceScriptModal()
+
+  if (!account?.id || !account?.platform) {
+    return
+  }
+
+  // 重新拉取一次余额信息，用于刷新 scriptConfigured 状态（启用"刷新余额"按钮）
+  try {
+    const res = await httpApis.getAccountBalanceApi(account.id, {
+      platform: account.platform,
+      queryApi: false
+    })
+    if (res?.success && res.data) {
+      handleBalanceRefreshed(account.id, res.data)
+    }
+  } catch (error) {
+    console.debug('Failed to reload balance after saving script:', error)
+  }
 }
 
 // 计算排序后的账户列表
@@ -2768,6 +2969,104 @@ const paginatedAccounts = computed(() => {
   return sortedAccounts.value.slice(start, end)
 })
 
+const canRefreshVisibleBalances = computed(() => {
+  const targets = paginatedAccounts.value
+  if (!Array.isArray(targets) || targets.length === 0) {
+    return false
+  }
+
+  return targets.some((account) => {
+    const info = account?.balanceInfo
+    return info?.scriptEnabled !== false && !!info?.scriptConfigured
+  })
+})
+
+const refreshBalanceTooltip = computed(() => {
+  if (accountsLoading.value) return '正在加载账户...'
+  if (refreshingBalances.value) return '刷新中...'
+  if (!canRefreshVisibleBalances.value) return '当前页未配置余额脚本，无法刷新'
+  return '刷新当前页余额（仅对已配置余额脚本的账户生效）'
+})
+
+// 余额刷新成功回调
+const handleBalanceRefreshed = (accountId, balanceInfo) => {
+  accounts.value = accounts.value.map((account) => {
+    if (account.id !== accountId) return account
+    return { ...account, balanceInfo }
+  })
+}
+
+// 余额请求错误回调（仅提示，不中断页面）
+const handleBalanceError = (_accountId, error) => {
+  const message = error?.message || '余额查询失败'
+  showToast(message, 'error')
+}
+
+// 批量刷新当前页余额（触发查询）
+const refreshVisibleBalances = async () => {
+  if (refreshingBalances.value) return
+
+  const targets = paginatedAccounts.value
+  if (!targets || targets.length === 0) {
+    return
+  }
+
+  const eligibleTargets = targets.filter((account) => {
+    const info = account?.balanceInfo
+    return info?.scriptEnabled !== false && !!info?.scriptConfigured
+  })
+
+  if (eligibleTargets.length === 0) {
+    showToast('当前页没有配置余额脚本的账户', 'warning')
+    return
+  }
+
+  const skippedCount = targets.length - eligibleTargets.length
+
+  refreshingBalances.value = true
+  try {
+    const results = await Promise.all(
+      eligibleTargets.map(async (account) => {
+        try {
+          const response = await httpApis.refreshAccountBalanceApi(account.id, {
+            platform: account.platform
+          })
+          return { id: account.id, success: !!response?.success, data: response?.data || null }
+        } catch (error) {
+          return { id: account.id, success: false, error: error?.message || '刷新失败' }
+        }
+      })
+    )
+
+    const updatedMap = results.reduce((map, item) => {
+      if (item.success && item.data) {
+        map[item.id] = item.data
+      }
+      return map
+    }, {})
+
+    const successCount = results.filter((r) => r.success).length
+    const failCount = results.length - successCount
+
+    const skippedText = skippedCount > 0 ? `，跳过 ${skippedCount} 个未配置脚本` : ''
+    if (Object.keys(updatedMap).length > 0) {
+      accounts.value = accounts.value.map((account) => {
+        const balanceInfo = updatedMap[account.id]
+        if (!balanceInfo) return account
+        return { ...account, balanceInfo }
+      })
+    }
+
+    if (failCount === 0) {
+      showToast(`成功刷新 ${successCount} 个账户余额${skippedText}`, 'success')
+    } else {
+      showToast(`刷新完成：${successCount} 成功，${failCount} 失败${skippedText}`, 'warning')
+    }
+  } finally {
+    refreshingBalances.value = false
+  }
+}
+
 const updateSelectAllState = () => {
   const currentIds = paginatedAccounts.value.map((account) => account.id)
   const selectedInCurrentPage = currentIds.filter((id) =>
@@ -2816,6 +3115,52 @@ const cleanupSelectedAccounts = () => {
   const validIds = new Set(accounts.value.map((account) => account.id))
   selectedAccounts.value = selectedAccounts.value.filter((id) => validIds.has(id))
   updateSelectAllState()
+}
+
+// 异步加载余额缓存（按平台批量拉取，避免逐行请求）
+const loadBalanceCacheForAccounts = async () => {
+  const current = accounts.value
+  if (!Array.isArray(current) || current.length === 0) {
+    return
+  }
+
+  const platforms = Array.from(new Set(current.map((acc) => acc.platform).filter(Boolean)))
+  if (platforms.length === 0) {
+    return
+  }
+
+  const responses = await Promise.all(
+    platforms.map(async (platform) => {
+      try {
+        const res = await httpApis.getBalanceByPlatformApi(platform, { queryApi: false })
+        return { platform, success: !!res?.success, data: res?.data || [] }
+      } catch (error) {
+        console.debug(`Failed to load balance cache for ${platform}:`, error)
+        return { platform, success: false, data: [] }
+      }
+    })
+  )
+
+  const balanceMap = responses.reduce((map, item) => {
+    if (!item.success) return map
+    const list = Array.isArray(item.data) ? item.data : []
+    list.forEach((entry) => {
+      const accountId = entry?.data?.accountId
+      if (accountId) {
+        map[accountId] = entry.data
+      }
+    })
+    return map
+  }, {})
+
+  if (Object.keys(balanceMap).length === 0) {
+    return
+  }
+
+  accounts.value = accounts.value.map((account) => ({
+    ...account,
+    balanceInfo: balanceMap[account.id] || account.balanceInfo || null
+  }))
 }
 
 // 加载账户列表
@@ -2947,27 +3292,9 @@ const loadAccounts = async (forceReload = false) => {
     })
 
     if (openaiResponsesRaw.length > 0) {
-      let autoRecoveryConfigMap = {}
-      try {
-        const configsRes = await apiClient.get(
-          '/admin/openai-responses-accounts/auto-recovery-configs'
-        )
-        if (configsRes.success && Array.isArray(configsRes.data)) {
-          autoRecoveryConfigMap = configsRes.data.reduce((map, config) => {
-            if (config?.accountId) {
-              map[config.accountId] = config
-            }
-            return map
-          }, {})
-        }
-      } catch (error) {
-        console.debug('Failed to load auto-recovery configs:', error)
-      }
-
       const responsesAccounts = openaiResponsesRaw.map((acc) => {
         const boundApiKeysCount = counts.openaiAccountId?.[`responses:${acc.id}`] || 0
-        const autoRecoveryConfig = autoRecoveryConfigMap[acc.id] || acc.autoRecoveryConfig || null
-        return { ...acc, platform: 'openai-responses', boundApiKeysCount, autoRecoveryConfig }
+        return { ...acc, platform: 'openai-responses', boundApiKeysCount }
       })
 
       allAccounts.push(...responsesAccounts)
@@ -3001,6 +3328,39 @@ const loadAccounts = async (forceReload = false) => {
       }
     })
 
+    // 获取临时不可用状态并附加到账户数据
+    try {
+      const tempRes = await httpApis.getTempUnavailableApi()
+      if (tempRes?.success && tempRes.data) {
+        const tempStatuses = tempRes.data
+        filteredAccounts = filteredAccounts.map((account) => {
+          // 尝试匹配 accountType:accountId
+          const platformTypeMap = {
+            claude: 'claude-official',
+            'claude-console': 'claude-console',
+            bedrock: 'bedrock',
+            gemini: 'gemini',
+            'gemini-api': 'gemini-api',
+            openai: 'openai',
+            'openai-responses': 'openai-responses',
+            ccr: 'ccr',
+            droid: 'droid',
+            azure_openai: 'azure-openai',
+            'azure-openai': 'azure-openai'
+          }
+          const accountType = platformTypeMap[account.platform] || account.platform
+          const key = `${accountType}:${account.id}`
+          const tempStatus = tempStatuses[key]
+          if (tempStatus) {
+            return { ...account, tempUnavailable: tempStatus }
+          }
+          return account
+        })
+      }
+    } catch {
+      // 忽略错误，不影响账户列表显示
+    }
+
     accounts.value = filteredAccounts
     cleanupSelectedAccounts()
 
@@ -3010,6 +3370,11 @@ const loadAccounts = async (forceReload = false) => {
         console.debug('Claude usage loading failed:', err)
       })
     }
+
+    // 异步加载余额缓存（按平台批量）
+    loadBalanceCacheForAccounts().catch((err) => {
+      console.debug('Balance cache loading failed:', err)
+    })
   } catch (error) {
     showToast('加载账户失败', 'error')
   } finally {
@@ -3019,24 +3384,15 @@ const loadAccounts = async (forceReload = false) => {
 
 // 异步加载 Claude 账户的 Usage 数据
 const loadClaudeUsage = async () => {
-  try {
-    const response = await apiClient.get('/admin/claude-accounts/usage')
-    if (response.success && response.data) {
-      const usageMap = response.data
-
-      // 更新账户列表中的 claudeUsage 数据
-      accounts.value = accounts.value.map((account) => {
-        if (account.platform === 'claude' && usageMap[account.id]) {
-          return {
-            ...account,
-            claudeUsage: usageMap[account.id]
-          }
-        }
-        return account
-      })
-    }
-  } catch (error) {
-    console.debug('Failed to load Claude usage data:', error)
+  const response = await httpApis.getClaudeAccountsUsageApi()
+  if (response.success && response.data) {
+    const usageMap = response.data
+    accounts.value = accounts.value.map((account) => {
+      if (account.platform === 'claude' && usageMap[account.id]) {
+        return { ...account, claudeUsage: usageMap[account.id] }
+      }
+      return account
+    })
   }
 }
 
@@ -3070,16 +3426,6 @@ const handleDropdownSort = (field) => {
 }
 
 // 格式化数字（与原版保持一致）
-const formatNumber = (num) => {
-  if (num === null || num === undefined) return '0'
-  const number = Number(num)
-  if (number >= 1000000) {
-    return (number / 1000000).toFixed(2)
-  } else if (number >= 1000) {
-    return (number / 1000000).toFixed(4)
-  }
-  return (number / 1000000).toFixed(6)
-}
 
 // 格式化最后使用时间
 const formatLastUsed = (dateString) => {
@@ -3104,53 +3450,31 @@ const clearSearch = () => {
 
 // 加载绑定计数（轻量级接口，用于显示"绑定: X 个API Key"）
 const loadBindingCounts = async (forceReload = false) => {
-  if (!forceReload && bindingCountsLoaded.value) {
-    return // 使用缓存数据
-  }
-
-  try {
-    const response = await apiClient.get('/admin/accounts/binding-counts')
-    if (response.success) {
-      bindingCounts.value = response.data || {}
-      bindingCountsLoaded.value = true
-    }
-  } catch (error) {
-    // 静默处理错误，绑定计数显示为 0
-    bindingCounts.value = {}
+  if (!forceReload && bindingCountsLoaded.value) return
+  const response = await httpApis.getAccountsBindingCountsApi()
+  if (response.success) {
+    bindingCounts.value = response.data || {}
+    bindingCountsLoaded.value = true
   }
 }
 
 // 加载API Keys列表（保留用于其他功能，如删除账户时显示绑定信息）
 const loadApiKeys = async (forceReload = false) => {
-  if (!forceReload && apiKeysLoaded.value) {
-    return // 使用缓存数据
-  }
-
-  try {
-    const response = await apiClient.get('/admin/api-keys')
-    if (response.success) {
-      apiKeys.value = response.data?.items || response.data || []
-      apiKeysLoaded.value = true
-    }
-  } catch (error) {
-    // 静默处理错误
+  if (!forceReload && apiKeysLoaded.value) return
+  const response = await httpApis.getApiKeysApi()
+  if (response.success) {
+    apiKeys.value = response.data?.items || response.data || []
+    apiKeysLoaded.value = true
   }
 }
 
 // 加载账户分组列表（缓存版本）
 const loadAccountGroups = async (forceReload = false) => {
-  if (!forceReload && groupsLoaded.value) {
-    return // 使用缓存数据
-  }
-
-  try {
-    const response = await apiClient.get('/admin/account-groups')
-    if (response.success) {
-      accountGroups.value = response.data || []
-      groupsLoaded.value = true
-    }
-  } catch (error) {
-    // 静默处理错误
+  if (!forceReload && groupsLoaded.value) return
+  const response = await httpApis.getAccountGroupsApi()
+  if (response.success) {
+    accountGroups.value = response.data || []
+    groupsLoaded.value = true
   }
 }
 
@@ -3320,6 +3644,16 @@ const formatRateLimitTime = (minutes) => {
   }
 }
 
+// 格式化临时暂停剩余时间（秒 → 可读格式）
+const formatTempUnavailableTime = (seconds) => {
+  if (!seconds || seconds <= 0) return ''
+  seconds = Math.floor(seconds)
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  if (mins > 0) return `${mins}m${secs > 0 ? secs + 's' : ''}`
+  return `${secs}s`
+}
+
 // 检查账户是否被限流
 const isAccountRateLimited = (account) => {
   if (!account) return false
@@ -3435,20 +3769,10 @@ const resolveAccountDeleteEndpoint = (account) => {
 
 const performAccountDeletion = async (account) => {
   const endpoint = resolveAccountDeleteEndpoint(account)
-  if (!endpoint) {
-    return { success: false, message: '不支持的账户类型' }
-  }
-
-  try {
-    const data = await apiClient.delete(endpoint)
-    if (data.success) {
-      return { success: true, data }
-    }
-    return { success: false, message: data.message || '删除失败' }
-  } catch (error) {
-    const message = error.response?.data?.message || error.message || '删除失败'
-    return { success: false, message }
-  }
+  if (!endpoint) return { success: false, message: '不支持的账户类型' }
+  const data = await httpApis.deleteAccountByEndpointApi(endpoint)
+  if (data.success) return { success: true, data }
+  return { success: false, message: data.message || '删除失败' }
 }
 
 // 删除账户
@@ -3579,17 +3903,13 @@ const batchDeleteAccounts = async () => {
 const resetAccountStatus = async (account) => {
   if (account.isResetting) return
 
-  let confirmed = false
-  if (window.showConfirm) {
-    confirmed = await window.showConfirm(
-      '重置账户状态',
-      '确定要重置此账户的所有异常状态吗？这将清除限流状态、401错误计数等所有异常标记。',
-      '确定重置',
-      '取消'
-    )
-  } else {
-    confirmed = confirm('确定要重置此账户的所有异常状态吗？')
-  }
+  const confirmed = await showConfirm(
+    '重置账户状态',
+    '确定要重置此账户的所有异常状态吗？这将清除限流状态、401错误计数等所有异常标记。',
+    '确定重置',
+    '取消',
+    'warning'
+  )
 
   if (!confirmed) return
 
@@ -3614,24 +3934,26 @@ const resetAccountStatus = async (account) => {
       endpoint = `/admin/gemini-api-accounts/${account.id}/reset-status`
     } else if (account.platform === 'gemini') {
       endpoint = `/admin/gemini-accounts/${account.id}/reset-status`
+    } else if (account.platform === 'bedrock') {
+      endpoint = `/admin/bedrock-accounts/${account.id}/reset-status`
+    } else if (account.platform === 'azure-openai') {
+      endpoint = `/admin/azure-openai-accounts/${account.id}/reset-status`
     } else {
       showToast('不支持的账户类型', 'error')
       account.isResetting = false
       return
     }
 
-    const data = await apiClient.post(endpoint)
-
+    const data = await httpApis.testAccountByEndpointApi(endpoint)
     if (data.success) {
       showToast('账户状态已重置', 'success')
-      // 强制刷新，绕过前端缓存，确保最终一致性
       loadAccounts(true)
     } else {
       showToast(data.message || '状态重置失败', 'error')
     }
+    account.isResetting = false
   } catch (error) {
-    showToast('状态重置失败', 'error')
-  } finally {
+    showToast(error.message || '状态重置失败', 'error')
     account.isResetting = false
   }
 }
@@ -3639,49 +3961,43 @@ const resetAccountStatus = async (account) => {
 // 切换调度状态
 const toggleSchedulable = async (account) => {
   if (account.isTogglingSchedulable) return
+  account.isTogglingSchedulable = true
 
-  try {
-    account.isTogglingSchedulable = true
-
-    let endpoint
-    if (account.platform === 'claude') {
-      endpoint = `/admin/claude-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'claude-console') {
-      endpoint = `/admin/claude-console-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'bedrock') {
-      endpoint = `/admin/bedrock-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'gemini') {
-      endpoint = `/admin/gemini-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'openai') {
-      endpoint = `/admin/openai-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'azure_openai') {
-      endpoint = `/admin/azure-openai-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'openai-responses') {
-      endpoint = `/admin/openai-responses-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'ccr') {
-      endpoint = `/admin/ccr-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'droid') {
-      endpoint = `/admin/droid-accounts/${account.id}/toggle-schedulable`
-    } else if (account.platform === 'gemini-api') {
-      endpoint = `/admin/gemini-api-accounts/${account.id}/toggle-schedulable`
-    } else {
-      showToast('该账户类型暂不支持调度控制', 'warning')
-      return
-    }
-
-    const data = await apiClient.put(endpoint)
-
-    if (data.success) {
-      account.schedulable = data.schedulable
-      showToast(data.schedulable ? '已启用调度' : '已禁用调度', 'success')
-    } else {
-      showToast(data.message || '操作失败', 'error')
-    }
-  } catch (error) {
-    showToast('切换调度状态失败', 'error')
-  } finally {
+  let endpoint
+  if (account.platform === 'claude') {
+    endpoint = `/admin/claude-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'claude-console') {
+    endpoint = `/admin/claude-console-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'bedrock') {
+    endpoint = `/admin/bedrock-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'gemini') {
+    endpoint = `/admin/gemini-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'openai') {
+    endpoint = `/admin/openai-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'azure_openai') {
+    endpoint = `/admin/azure-openai-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'openai-responses') {
+    endpoint = `/admin/openai-responses-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'ccr') {
+    endpoint = `/admin/ccr-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'droid') {
+    endpoint = `/admin/droid-accounts/${account.id}/toggle-schedulable`
+  } else if (account.platform === 'gemini-api') {
+    endpoint = `/admin/gemini-api-accounts/${account.id}/toggle-schedulable`
+  } else {
+    showToast('该账户类型暂不支持调度控制', 'warning')
     account.isTogglingSchedulable = false
+    return
   }
+
+  const data = await httpApis.toggleAccountStatusApi(endpoint)
+  if (data.success) {
+    account.schedulable = data.schedulable
+    showToast(data.schedulable ? '已启用调度' : '已禁用调度', 'success')
+  } else {
+    showToast(data.message || '操作失败', 'error')
+  }
+  account.isTogglingSchedulable = false
 }
 
 // 处理创建成功
@@ -3873,11 +4189,23 @@ const getSchedulableReason = (account) => {
     if (account.status === 'unauthorized') {
       return 'API Key无效或已过期（401错误）'
     }
+    // 检查配额超限状态
+    if (account.status === 'quota_exceeded') {
+      return '余额不足'
+    }
     if (account.overloadStatus === 'overloaded') {
       return '服务过载（529错误）'
     }
     if (account.rateLimitStatus === 'limited') {
       return '触发限流（429错误）'
+    }
+    // 检查配额超限状态（quotaAutoStopped 或 quotaStoppedAt 任一存在即表示配额超限）
+    if (
+      account.quotaAutoStopped === 'true' ||
+      account.quotaAutoStopped === true ||
+      account.quotaStoppedAt
+    ) {
+      return '余额不足'
     }
     if (account.status === 'blocked' && account.errorMessage) {
       return account.errorMessage
@@ -3957,6 +4285,15 @@ const getSchedulableReason = (account) => {
   return '手动停止调度'
 }
 
+// 检查是否是配额超限状态（用于状态显示判断）
+const isQuotaExceeded = (account) => {
+  return (
+    account.quotaAutoStopped === 'true' ||
+    account.quotaAutoStopped === true ||
+    !!account.quotaStoppedAt
+  )
+}
+
 // 获取账户状态文本
 const getAccountStatusText = (account) => {
   // 检查是否被封锁
@@ -3975,9 +4312,9 @@ const getAccountStatusText = (account) => {
   if (account.status === 'temp_error') return '临时异常'
   // 检查是否错误
   if (account.status === 'error' || !account.isActive) return '错误'
-  // 检查是否可调度
-  if (account.schedulable === false) return '已暂停'
-  // 否则正常
+  // 配额超限时显示"正常"（不显示"已暂停"）
+  if (account.schedulable === false && !isQuotaExceeded(account)) return '已暂停'
+  // 否则正常（包括配额超限状态）
   return '正常'
 }
 
@@ -4003,7 +4340,8 @@ const getAccountStatusClass = (account) => {
   if (account.status === 'error' || !account.isActive) {
     return 'bg-red-100 text-red-800'
   }
-  if (account.schedulable === false) {
+  // 配额超限时显示绿色（正常）
+  if (account.schedulable === false && !isQuotaExceeded(account)) {
     return 'bg-gray-100 text-gray-800'
   }
   return 'bg-green-100 text-green-800'
@@ -4031,7 +4369,8 @@ const getAccountStatusDotClass = (account) => {
   if (account.status === 'error' || !account.isActive) {
     return 'bg-red-500'
   }
-  if (account.schedulable === false) {
+  // 配额超限时显示绿色（正常）
+  if (account.schedulable === false && !isQuotaExceeded(account)) {
     return 'bg-gray-500'
   }
   return 'bg-green-500'
@@ -4046,9 +4385,6 @@ const getAccountStatusDotClass = (account) => {
 // }
 
 // 格式化相对时间
-const formatRelativeTime = (dateString) => {
-  return formatLastUsed(dateString)
-}
 
 // 获取会话窗口进度条的样式类
 const getSessionProgressBarClass = (status, account = null) => {
@@ -4479,29 +4815,20 @@ const handleSaveAccountExpiry = async ({ accountId, expiresAt }) => {
         return
     }
 
-    const data = await apiClient.put(endpoint, {
+    const data = await httpApis.updateAccountByEndpointApi(endpoint, {
       expiresAt: expiresAt || null
     })
-
     if (data.success) {
       showToast('账户到期时间已更新', 'success')
-      // 更新本地数据
       account.expiresAt = expiresAt || null
       closeAccountExpiryEdit()
     } else {
       showToast(data.message || '更新失败', 'error')
-      // 重置保存状态
-      if (expiryEditModalRef.value) {
-        expiryEditModalRef.value.resetSaving()
-      }
+      if (expiryEditModalRef.value) expiryEditModalRef.value.resetSaving()
     }
   } catch (error) {
-    console.error('更新账户过期时间失败:', error)
-    showToast('更新失败', 'error')
-    // 重置保存状态
-    if (expiryEditModalRef.value) {
-      expiryEditModalRef.value.resetSaving()
-    }
+    showToast(error.message || '更新失败', 'error')
+    if (expiryEditModalRef.value) expiryEditModalRef.value.resetSaving()
   }
 }
 
@@ -4616,28 +4943,41 @@ onUnmounted(() => {
 }
 
 .dark .table-container::-webkit-scrollbar-track {
-  background: #374151;
+  background: var(--bg-gradient-mid);
 }
 
 .dark .table-container::-webkit-scrollbar-thumb {
-  background: #4b5563;
+  background: var(--bg-gradient-end);
 }
 
 .dark .table-container::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+  background: var(--text-secondary);
 }
 
-/* 表格行样式 */
-.table-row {
-  transition: all 0.2s ease;
+/* 统一 hover 背景 - 所有 td 使用主题色 */
+.table-container tbody tr:hover > td {
+  background-color: rgba(var(--primary-rgb), 0.06) !important;
 }
 
-.table-row:hover {
-  background-color: rgba(0, 0, 0, 0.02);
+.dark .table-container tbody tr:hover > td {
+  background-color: rgba(var(--primary-rgb), 0.16) !important;
 }
 
-.dark .table-row:hover {
-  background-color: rgba(255, 255, 255, 0.02);
+/* 所有 td 的斑马纹背景 */
+.table-container tbody tr:nth-child(odd) > td {
+  background-color: #ffffff;
+}
+
+.table-container tbody tr:nth-child(even) > td {
+  background-color: #f9fafb;
+}
+
+.dark .table-container tbody tr:nth-child(odd) > td {
+  background-color: var(--bg-gradient-start);
+}
+
+.dark .table-container tbody tr:nth-child(even) > td {
+  background-color: var(--bg-gradient-mid);
 }
 
 /* 表头左侧固定列背景 - 使用纯色避免滚动时重叠 */
@@ -4649,7 +4989,7 @@ onUnmounted(() => {
 
 .dark .table-container thead .checkbox-column,
 .dark .table-container thead .name-column {
-  background: linear-gradient(to bottom, #374151, #1f2937);
+  background: linear-gradient(to bottom, var(--bg-gradient-mid), var(--bg-gradient-start));
 }
 
 /* 表头右侧操作列背景 - 使用纯色避免滚动时重叠 */
@@ -4659,39 +4999,7 @@ onUnmounted(() => {
 }
 
 .dark .table-container thead .operations-column {
-  background: linear-gradient(to bottom, #374151, #1f2937);
-}
-
-/* tbody 中的左侧固定列背景处理 - 使用纯色避免滚动时重叠 */
-.table-container tbody tr:nth-child(odd) .checkbox-column,
-.table-container tbody tr:nth-child(odd) .name-column {
-  background-color: #ffffff;
-}
-
-.table-container tbody tr:nth-child(even) .checkbox-column,
-.table-container tbody tr:nth-child(even) .name-column {
-  background-color: #f9fafb;
-}
-
-.dark .table-container tbody tr:nth-child(odd) .checkbox-column,
-.dark .table-container tbody tr:nth-child(odd) .name-column {
-  background-color: #1f2937;
-}
-
-.dark .table-container tbody tr:nth-child(even) .checkbox-column,
-.dark .table-container tbody tr:nth-child(even) .name-column {
-  background-color: #374151;
-}
-
-/* hover 状态下的左侧固定列背景 */
-.table-container tbody tr:hover .checkbox-column,
-.table-container tbody tr:hover .name-column {
-  background-color: #eff6ff;
-}
-
-.dark .table-container tbody tr:hover .checkbox-column,
-.dark .table-container tbody tr:hover .name-column {
-  background-color: #1e3a5f;
+  background: linear-gradient(to bottom, var(--bg-gradient-mid), var(--bg-gradient-start));
 }
 
 /* 名称列右侧阴影（分隔效果） */
@@ -4701,32 +5009,6 @@ onUnmounted(() => {
 
 .dark .table-container tbody .name-column {
   box-shadow: 8px 0 12px -8px rgba(30, 41, 59, 0.45);
-}
-
-/* tbody 中的操作列背景处理 - 使用纯色避免滚动时重叠 */
-.table-container tbody tr:nth-child(odd) .operations-column {
-  background-color: #ffffff;
-}
-
-.table-container tbody tr:nth-child(even) .operations-column {
-  background-color: #f9fafb;
-}
-
-.dark .table-container tbody tr:nth-child(odd) .operations-column {
-  background-color: #1f2937;
-}
-
-.dark .table-container tbody tr:nth-child(even) .operations-column {
-  background-color: #374151;
-}
-
-/* hover 状态下的操作列背景 */
-.table-container tbody tr:hover .operations-column {
-  background-color: #eff6ff;
-}
-
-.dark .table-container tbody tr:hover .operations-column {
-  background-color: #1e3a5f;
 }
 
 /* 操作列左侧阴影 */
