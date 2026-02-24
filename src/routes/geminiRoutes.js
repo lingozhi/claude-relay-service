@@ -30,6 +30,7 @@ const {
   handleStreamGenerateContent,
   handleLoadCodeAssist,
   handleOnboardUser,
+  handleRetrieveUserQuota,
   handleCountTokens,
   handleStandardGenerateContent,
   handleStandardStreamGenerateContent,
@@ -69,7 +70,7 @@ router.get('/usage', authenticateApiKey, handleUsage)
 router.get('/key-info', authenticateApiKey, handleKeyInfo)
 
 // ============================================================================
-// v1internal 独有路由（listExperiments）
+// v1internal 独有路由
 // ============================================================================
 
 /**
@@ -82,6 +83,12 @@ router.post(
   authenticateApiKey,
   handleSimpleEndpoint('listExperiments')
 )
+
+/**
+ * POST /v1internal:retrieveUserQuota
+ * 获取用户配额信息（Gemini CLI 0.22.2+ 需要）
+ */
+router.post('/v1internal\\:retrieveUserQuota', authenticateApiKey, handleRetrieveUserQuota)
 
 /**
  * POST /v1beta/models/:modelName:listExperiments

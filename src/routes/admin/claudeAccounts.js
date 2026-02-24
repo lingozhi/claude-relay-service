@@ -6,8 +6,8 @@
 const express = require('express')
 const router = express.Router()
 
-const claudeAccountService = require('../../services/claudeAccountService')
-const claudeRelayService = require('../../services/claudeRelayService')
+const claudeAccountService = require('../../services/account/claudeAccountService')
+const claudeRelayService = require('../../services/relay/claudeRelayService')
 const accountGroupService = require('../../services/accountGroupService')
 const accountTestSchedulerService = require('../../services/accountTestSchedulerService')
 const apiKeyService = require('../../services/apiKeyService')
@@ -36,7 +36,7 @@ router.post('/claude-accounts/generate-auth-url', authenticateAdmin, async (req,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10分钟过期
     })
 
-    logger.success('🔗 Generated OAuth authorization URL with proxy support')
+    logger.success('Generated OAuth authorization URL with proxy support')
     return res.json({
       success: true,
       data: {
@@ -152,7 +152,7 @@ router.post('/claude-accounts/generate-setup-token-url', authenticateAdmin, asyn
       expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10分钟过期
     })
 
-    logger.success('🔗 Generated Setup Token authorization URL with proxy support')
+    logger.success('Generated Setup Token authorization URL with proxy support')
     return res.json({
       success: true,
       data: {
@@ -415,6 +415,14 @@ router.get('/claude-accounts', authenticateAdmin, async (req, res) => {
                 output_tokens: usage.outputTokens,
                 cache_creation_input_tokens: usage.cacheCreateTokens,
                 cache_read_input_tokens: usage.cacheReadTokens
+              }
+
+              // 添加 cache_creation 子对象以支持精确 ephemeral 定价
+              if (usage.ephemeral5mTokens > 0 || usage.ephemeral1hTokens > 0) {
+                usageData.cache_creation = {
+                  ephemeral_5m_input_tokens: usage.ephemeral5mTokens,
+                  ephemeral_1h_input_tokens: usage.ephemeral1hTokens
+                }
               }
 
               logger.debug(`💰 Calculating cost for model ${modelName}:`, JSON.stringify(usageData))
@@ -786,7 +794,7 @@ router.post('/claude-accounts/:accountId/update-profile', authenticateAdmin, asy
 
     const profileInfo = await claudeAccountService.fetchAndUpdateAccountProfile(accountId)
 
-    logger.success(`✅ Updated profile for Claude account: ${accountId}`)
+    logger.success(`Updated profile for Claude account: ${accountId}`)
     return res.json({
       success: true,
       message: 'Account profile updated successfully',
@@ -805,7 +813,7 @@ router.post('/claude-accounts/update-all-profiles', authenticateAdmin, async (re
   try {
     const result = await claudeAccountService.updateAllAccountProfiles()
 
-    logger.success('✅ Batch profile update completed')
+    logger.success('Batch profile update completed')
     return res.json({
       success: true,
       message: 'Batch profile update completed',
@@ -841,7 +849,7 @@ router.post('/claude-accounts/:accountId/reset-status', authenticateAdmin, async
 
     const result = await claudeAccountService.resetAccountStatus(accountId)
 
-    logger.success(`✅ Admin reset status for Claude account: ${accountId}`)
+    logger.success(`Admin reset status for Claude account: ${accountId}`)
     return res.json({ success: true, data: result })
   } catch (error) {
     logger.error('❌ Failed to reset Claude account status:', error)

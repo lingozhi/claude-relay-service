@@ -232,10 +232,10 @@
             />
           </div>
 
-          <!-- Opus 模型周费用限制 -->
+          <!-- Claude 模型周费用限制 -->
           <div>
             <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
-              Opus 模型周费用限制 (美元)
+              Claude 模型周费用限制 (美元)
             </label>
             <input
               v-model="form.weeklyOpusCostLimit"
@@ -246,8 +246,45 @@
               type="number"
             />
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              设置 Opus 模型的周费用限制（周一到周日），仅限 Claude 官方账户
+              设置 Claude 模型的周费用限制，仅对 Claude 模型请求生效
             </p>
+            <div
+              v-if="form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0"
+              class="mt-2 flex gap-3"
+            >
+              <div class="flex-1">
+                <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                  >重置日</label
+                >
+                <select
+                  v-model="form.weeklyResetDay"
+                  class="form-input w-full border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                >
+                  <option value="">不修改</option>
+                  <option :value="1">周一</option>
+                  <option :value="2">周二</option>
+                  <option :value="3">周三</option>
+                  <option :value="4">周四</option>
+                  <option :value="5">周五</option>
+                  <option :value="6">周六</option>
+                  <option :value="7">周日</option>
+                </select>
+              </div>
+              <div class="flex-1">
+                <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                  >重置时间 (UTC+8)</label
+                >
+                <select
+                  v-model="form.weeklyResetHour"
+                  class="form-input w-full border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                >
+                  <option value="">不修改</option>
+                  <option v-for="h in 24" :key="h - 1" :value="h - 1">
+                    {{ String(h - 1).padStart(2, '0') }}:00
+                  </option>
+                </select>
+              </div>
+            </div>
           </div>
 
           <!-- 并发限制 -->
@@ -446,9 +483,9 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { showToast } from '@/utils/toast'
+import { showToast } from '@/utils/tools'
 import { useApiKeysStore } from '@/stores/apiKeys'
-import { apiClient } from '@/config/api'
+import * as httpApis from '@/utils/http_apis'
 import AccountSelector from '@/components/common/AccountSelector.vue'
 
 const props = defineProps({
@@ -510,7 +547,9 @@ const form = reactive({
   concurrencyLimit: '',
   dailyCostLimit: '',
   totalCostLimit: '',
-  weeklyOpusCostLimit: '', // 新增Opus周费用限制
+  weeklyOpusCostLimit: '', // 新增Claude周费用限制
+  weeklyResetDay: '',
+  weeklyResetHour: '',
   permissions: '', // 空字符串表示不修改
   claudeAccountId: '',
   geminiAccountId: '',
@@ -549,6 +588,8 @@ const droidAccountSelectorValue = createAccountSelectorModel('droidAccountId')
 const isServiceSelectable = (service) => {
   if (!form.permissions) return true
   if (form.permissions === 'all') return true
+  if (Array.isArray(form.permissions) && form.permissions.length === 0) return true
+  if (Array.isArray(form.permissions)) return form.permissions.includes(service)
   return form.permissions === service
 }
 
@@ -588,15 +629,15 @@ const refreshAccounts = async () => {
       droidData,
       groupsData
     ] = await Promise.all([
-      apiClient.get('/admin/claude-accounts'),
-      apiClient.get('/admin/claude-console-accounts'),
-      apiClient.get('/admin/gemini-accounts'),
-      apiClient.get('/admin/gemini-api-accounts'), // 获取 Gemini-API 账号
-      apiClient.get('/admin/openai-accounts'),
-      apiClient.get('/admin/openai-responses-accounts'),
-      apiClient.get('/admin/bedrock-accounts'),
-      apiClient.get('/admin/droid-accounts'),
-      apiClient.get('/admin/account-groups')
+      httpApis.getClaudeAccountsApi(),
+      httpApis.getClaudeConsoleAccountsApi(),
+      httpApis.getGeminiAccountsApi(),
+      httpApis.getGeminiApiAccountsApi(), // 获取 Gemini-API 账号
+      httpApis.getOpenAIAccountsApi(),
+      httpApis.getOpenAIResponsesAccountsApi(),
+      httpApis.getBedrockAccountsApi(),
+      httpApis.getDroidAccountsApi(),
+      httpApis.getAccountGroupsApi()
     ])
 
     // 合并Claude OAuth账户和Claude Console账户
@@ -735,6 +776,12 @@ const batchUpdateApiKeys = async () => {
     if (form.weeklyOpusCostLimit !== '' && form.weeklyOpusCostLimit !== null) {
       updates.weeklyOpusCostLimit = parseFloat(form.weeklyOpusCostLimit)
     }
+    if (form.weeklyResetDay !== '' && form.weeklyResetDay !== null) {
+      updates.weeklyResetDay = Number(form.weeklyResetDay)
+    }
+    if (form.weeklyResetHour !== '' && form.weeklyResetHour !== null) {
+      updates.weeklyResetHour = Number(form.weeklyResetHour)
+    }
 
     // 权限设置
     if (form.permissions !== '') {
@@ -801,7 +848,7 @@ const batchUpdateApiKeys = async () => {
       updates.tagOperation = tagOperation.value
     }
 
-    const result = await apiClient.put('/admin/api-keys/batch', {
+    const result = await httpApis.batchUpdateApiKeysApi({
       keyIds: props.selectedKeys,
       updates
     })
@@ -882,7 +929,3 @@ onMounted(async () => {
   }
 })
 </script>
-
-<style scoped>
-/* 表单样式由全局样式提供 */
-</style>
